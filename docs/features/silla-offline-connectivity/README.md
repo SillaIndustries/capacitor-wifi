@@ -6,13 +6,13 @@ Make Silla's connection to an EV charger's offline Wi-Fi reliable, explainable, 
 
 ## Status
 
-Lifecycle: Discovery
+Lifecycle: Implementation
 
-Current milestone: None
+Current milestone: M2 iOS bounded/cancellable connection — Owner refinement; M1 review deferred to the same batch
 
 Last updated: 2026-10-08
 
-All requirements, technical designs, and delivery slices are proposals, not implemented behavior or approved milestones.
+M1 and M2 implementations await combined owner/device review under the [batched-validation exception](../README.md#silla-batched-device-validation-exception). Later slices remain proposals. No milestone has definitive acceptance or physical-device validation.
 
 ## Owner
 
@@ -20,7 +20,10 @@ Product owner: Silla team; individual acceptance owner to be confirmed.
 
 ## Milestone Checklist
 
-No milestones defined yet.
+- [ ] M1 Android verified offline connection: verify the requested network, require requested routing, and release owned resources safely.
+- [ ] M2 iOS bounded/cancellable connection: separate consent/verification budgets, settle once, and retain configuration until disconnect.
+
+Later delivery slices remain discovery proposals, not formal milestones.
 
 ## Initiative and Sequencing
 
@@ -54,20 +57,22 @@ Browser review is not applicable to native association/routing. Physical-device 
 
 | Gate | Status | Approved by | Date | Scope and conditions |
 | --- | --- | --- | --- | --- |
-| Discovery | Awaiting review | | | Backlog captured from audits and discussion |
-| Requirements | Awaiting review | | | Proposed acceptance criteria; open product choices remain |
-| Design | Not ready | | | Current-code review and timeout/retention choices needed |
-| Plan | Not ready | | | Proposed slices only; no milestone authorization |
-| Final acceptance | Not ready | | | No implementation or device validation |
+| Discovery | Approved | Silla owner | 2026-10-08 | Direction to begin the first Android slice; remaining backlog not accepted |
+| Requirements | Approved | Silla owner | 2026-10-08 | M1/M2 scope; explicit routing/offline choices and separate iOS budgets with retention until disconnect |
+| Design | Awaiting review | | | M1/M2 technical mechanisms documented for combined review |
+| Plan | Awaiting review | | | M1/M2 development authorized; phone reviews batched, broader plan/release matrix open |
+| Final acceptance | Not ready | | | Owner review, hardening, and device evidence outstanding |
 
 ## Milestone Completion Rule
 
 Follow the [mandatory milestone completion sequence](../README.md#mandatory-milestone-completion-sequence). Owner implementation review begins hardening; definitive acceptance follows hardening and final owner validation.
 
+Owner exception: phone reviews may be batched across milestones and development may continue while they are outstanding. This does not accept either implementation or waive combined review/hardening/final validation.
+
 ## Current Blockers
 
-- Confirm timeout, routing-failure, and configuration-retention semantics before the affected implementation slice.
-- Device access and a Silla integration build are required to establish runtime correctness.
+- Combined Android/iPhone review requires a Silla integration build and an agreed device matrix; this is deferred evidence, not a development blocker under the exception.
+- Full native iOS compilation/SwiftLint requires macOS/Xcode; Linux policy tests and syntax parsing do not replace it.
 
 ## Pause or Cancellation Record
 

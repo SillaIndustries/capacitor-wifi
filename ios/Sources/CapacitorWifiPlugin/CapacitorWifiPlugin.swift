@@ -29,11 +29,39 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
     private var hotspotManager: NEHotspotConfigurationManager?
     private var locationManager: CLLocationManager?
     private var permissionCalls: [CAPPluginCall] = []
-    private let connectLock = NSLock()
-    private var connectInProgress = false
-    private var connectGeneration = 0
+    // Connection state, native completions, watchdogs, and cleanup use the main queue.
+    private var activeConnectAttempt: ConnectAttempt?
+    private var pendingApplications: [Int: PendingApplication] = [:]
+    private let configurationOwnership = WifiConfigurationOwnership()
+    private var lastRequestedSSID: String?
     private let defaultConnectTimeoutMs: Double = 30000
+    private let defaultRequestTimeoutMs: Double = 120000
     private let ssidVerifyPollSeconds: TimeInterval = 0.5
+
+    private final class ConnectAttempt {
+        var call: CAPPluginCall?
+        let ssid: String
+        let generation: Int
+        let lifecycle: WifiConnectionLifecycle
+        var watchdog: DispatchWorkItem?
+        var poll: DispatchWorkItem?
+        var removeWhenAppliedGeneration: Int?
+
+        init(call: CAPPluginCall, ssid: String, generation: Int, lifecycle: WifiConnectionLifecycle) {
+            self.call = call
+            self.ssid = ssid
+            self.generation = generation
+            self.lifecycle = lifecycle
+        }
+    }
+
+    private final class PendingApplication {
+        weak var attempt: ConnectAttempt?
+
+        init(_ attempt: ConnectAttempt) {
+            self.attempt = attempt
+        }
+    }
 
     override public func load() {
         hotspotManager = NEHotspotConfigurationManager.shared
@@ -42,6 +70,12 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
     }
 
     @objc func addNetwork(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.addNetworkOnMain(call)
+        }
+    }
+
+    private func addNetworkOnMain(_ call: CAPPluginCall) {
         guard let ssid = call.getString("ssid") else {
             call.reject("SSID is required")
             return
@@ -58,6 +92,9 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
 
         configuration.joinOnce = false
 
+        // Protect a new addNetwork request from cleanup of an older cancelled connect.
+        _ = configurationOwnership.claim(ssid: ssid)
+
         hotspotManager?.apply(configuration) { error in
             if let error = error {
                 call.reject("Failed to add network: \(error.localizedDescription)", nil, error)
@@ -68,9 +105,13 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
     }
 
     @objc func connect(_ call: CAPPluginCall) {
-        connectLock.lock()
-        if connectInProgress {
-            connectLock.unlock()
+        DispatchQueue.main.async {
+            self.connectOnMain(call)
+        }
+    }
+
+    private func connectOnMain(_ call: CAPPluginCall) {
+        if activeConnectAttempt != nil {
             rejectConnect(
                 call,
                 code: "CONNECTION_IN_PROGRESS",
@@ -82,13 +123,7 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             )
             return
         }
-        connectInProgress = true
-        connectGeneration += 1
-        let generation = connectGeneration
-        connectLock.unlock()
-
         guard let ssid = call.getString("ssid"), !ssid.isEmpty else {
-            finishConnectAttempt(generation)
             rejectConnect(
                 call,
                 code: "INVALID_CONFIGURATION",
@@ -101,12 +136,12 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             return
         }
 
-        guard let timeoutMs = resolveTimeoutMs(call) else {
-            finishConnectAttempt(generation)
+        guard let timeoutMs = resolveTimeoutMs(call, option: "timeoutMs", defaultValue: defaultConnectTimeoutMs),
+              let requestTimeoutMs = resolveTimeoutMs(call, option: "requestTimeoutMs", defaultValue: defaultRequestTimeoutMs) else {
             rejectConnect(
                 call,
                 code: "INVALID_CONFIGURATION",
-                message: "timeoutMs must be a positive number.",
+                message: "timeoutMs and requestTimeoutMs must be finite positive numbers no greater than 600000.",
                 stage: "validation",
                 nativeCode: nil,
                 nativeMessage: nil,
@@ -117,7 +152,6 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
 
         let password = call.getString("password")
         if let password = password, !password.isEmpty, !isValidWpaPassphrase(password) {
-            finishConnectAttempt(generation)
             rejectConnect(
                 call,
                 code: "INVALID_CONFIGURATION",
@@ -138,10 +172,7 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
         }
 
         configuration.joinOnce = false
-        let deadline = Date().addingTimeInterval(timeoutMs / 1000.0)
-
         guard let manager = hotspotManager else {
-            finishConnectAttempt(generation)
             rejectConnect(
                 call,
                 code: "UNKNOWN",
@@ -154,45 +185,93 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             return
         }
 
-        manager.apply(configuration) { [weak self] error in
-            guard let self = self else { return }
+        let generation = configurationOwnership.claim(ssid: ssid)
+        let lifecycle = WifiConnectionLifecycle(
+            startedAt: ProcessInfo.processInfo.systemUptime,
+            requestSeconds: requestTimeoutMs / 1000,
+            verificationSeconds: timeoutMs / 1000
+        )
+        let attempt = ConnectAttempt(call: call, ssid: ssid, generation: generation, lifecycle: lifecycle)
+        activeConnectAttempt = attempt
+        lastRequestedSSID = ssid
+        pendingApplications = pendingApplications.filter { $0.value.attempt != nil }
+        pendingApplications[generation] = PendingApplication(attempt)
+        logConnect(attempt, event: "request")
+        armWatchdog(attempt)
 
-            if let error = error as NSError? {
-                if error.domain == NEHotspotConfigurationErrorDomain,
-                   error.code == NEHotspotConfigurationError.alreadyAssociated.rawValue {
-                    self.verifyConnectedSsid(ssid, generation: generation, deadline: deadline, call: call)
+        manager.apply(configuration) { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.pendingApplications.removeValue(forKey: generation)
+                guard self.activeConnectAttempt === attempt else {
+                    self.removeCancelledConfigurationIfNeeded(attempt)
                     return
                 }
-
-                let mapped = self.mapHotspotConfigurationError(error)
-                self.finishConnectAttempt(generation)
-                self.rejectConnect(
-                    call,
-                    code: mapped.code,
-                    message: mapped.message,
-                    stage: mapped.stage,
-                    nativeCode: error.code,
-                    nativeMessage: error.localizedDescription,
-                    error: error
-                )
-                return
+                guard !self.expireIfNeeded(attempt) else { return }
+                if let error = error as NSError?,
+                   !(error.domain == NEHotspotConfigurationErrorDomain &&
+                     error.code == NEHotspotConfigurationError.alreadyAssociated.rawValue) {
+                    let mapped = self.mapHotspotConfigurationError(error)
+                    self.completeConnect(
+                        attempt, code: mapped.code, message: mapped.message, stage: mapped.stage,
+                        error: error
+                    )
+                    return
+                }
+                guard attempt.lifecycle.beginVerification(at: ProcessInfo.processInfo.systemUptime) else { return }
+                self.logConnect(attempt, event: "verification-start")
+                self.armWatchdog(attempt)
+                self.verifyConnectedSsid(attempt)
             }
-
-            self.verifyConnectedSsid(ssid, generation: generation, deadline: deadline, call: call)
         }
     }
 
     @objc func disconnect(_ call: CAPPluginCall) {
-        let ssid = call.getString("ssid")
+        DispatchQueue.main.async {
+            self.disconnectOnMain(call)
+        }
+    }
 
-        if let ssid = ssid {
-            hotspotManager?.removeConfiguration(forSSID: ssid)
+    private func disconnectOnMain(_ call: CAPPluginCall) {
+        let target = call.getString("ssid") ?? activeConnectAttempt?.ssid ?? lastRequestedSSID
+        if let attempt = activeConnectAttempt {
+            completeConnect(
+                attempt, code: "CONNECTION_FAILED",
+                message: "Connection cancelled because disconnect() was called.", stage: attempt.lifecycle.phase.rawValue
+            )
+        }
+        if let target = target {
+            removeConfigurationForDisconnect(target)
             call.resolve()
-        } else {
-            // Disconnect from current network by fetching current SSID asynchronously
-            Task {
-                if let currentSSID = await fetchCurrentNetwork()?.ssid {
-                    self.hotspotManager?.removeConfiguration(forSSID: currentSSID)
+            return
+        }
+
+        // Preserve the current-network fallback after app restart, but bound the lookup and
+        // never let its late result remove a configuration requested after this disconnect.
+        let sequence = configurationOwnership.sequence
+        let lookup = WifiConnectionLifecycle(
+            startedAt: ProcessInfo.processInfo.systemUptime,
+            requestSeconds: defaultRequestTimeoutMs / 1000, verificationSeconds: 0
+        )
+        let watchdog = DispatchWorkItem {
+            if lookup.finish() {
+                call.reject("Timed out reading the current Wi-Fi network for disconnect.", "CONNECTION_TIMEOUT")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + defaultRequestTimeoutMs / 1000, execute: watchdog)
+        NEHotspotNetwork.fetchCurrent { [weak self] network in
+            DispatchQueue.main.async {
+                if lookup.expiredPhase(at: ProcessInfo.processInfo.systemUptime) != nil {
+                    if lookup.finish() {
+                        watchdog.cancel()
+                        call.reject("Timed out reading the current Wi-Fi network for disconnect.", "CONNECTION_TIMEOUT")
+                    }
+                    return
+                }
+                guard lookup.finish() else { return }
+                watchdog.cancel()
+                if let self = self, self.configurationOwnership.sequence == sequence, let ssid = network?.ssid {
+                    self.removeConfigurationForDisconnect(ssid)
                 }
                 call.resolve()
             }
@@ -379,63 +458,120 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
     }
 
 
-    private func resolveTimeoutMs(_ call: CAPPluginCall) -> Double? {
-        guard let raw = call.getValue("timeoutMs"), !(raw is NSNull) else {
-            return defaultConnectTimeoutMs
+    private func resolveTimeoutMs(_ call: CAPPluginCall, option: String, defaultValue: Double) -> Double? {
+        guard let raw = call.getValue(option), !(raw is NSNull) else {
+            return defaultValue
         }
-        if let value = call.getDouble("timeoutMs") {
-            return value > 0 ? value : nil
+        if let value = call.getDouble(option) {
+            return WifiConnectionLifecycle.isValidTimeoutMilliseconds(value) ? value : nil
         }
-        if let value = call.getInt("timeoutMs") {
-            return value > 0 ? Double(value) : nil
+        if let value = call.getInt(option) {
+            return WifiConnectionLifecycle.isValidTimeoutMilliseconds(Double(value)) ? Double(value) : nil
         }
         return nil
     }
 
-    private func finishConnectAttempt(_ generation: Int) {
-        connectLock.lock()
-        if connectGeneration == generation {
-            connectInProgress = false
-        }
-        connectLock.unlock()
-    }
-
-    private func isCurrentConnectAttempt(_ generation: Int) -> Bool {
-        connectLock.lock()
-        defer { connectLock.unlock() }
-        return connectGeneration == generation && connectInProgress
-    }
-
-    private func verifyConnectedSsid(_ expectedSsid: String, generation: Int, deadline: Date, call: CAPPluginCall) {
-        Task { [weak self] in
-            guard let self = self else { return }
-
-            while true {
-                guard self.isCurrentConnectAttempt(generation) else { return }
-
-                if Date() > deadline {
-                    self.finishConnectAttempt(generation)
-                    self.rejectConnect(
-                        call,
-                        code: "CONNECTION_TIMEOUT",
-                        message: "Timed out waiting for Wi-Fi connection confirmation.",
-                        stage: "verification",
-                        nativeCode: nil,
-                        nativeMessage: nil,
-                        error: nil
-                    )
-                    return
-                }
-
-                if let current = await self.fetchCurrentNetwork()?.ssid, current == expectedSsid {
-                    self.finishConnectAttempt(generation)
-                    call.resolve()
-                    return
-                }
-
-                try? await Task.sleep(nanoseconds: UInt64(self.ssidVerifyPollSeconds * 1_000_000_000))
+    private func armWatchdog(_ attempt: ConnectAttempt) {
+        attempt.watchdog?.cancel()
+        let watchdog = DispatchWorkItem { [weak self, weak attempt] in
+            guard let self = self, let attempt = attempt, self.activeConnectAttempt === attempt else { return }
+            if !self.expireIfNeeded(attempt) {
+                self.armWatchdog(attempt)
             }
         }
+        attempt.watchdog = watchdog
+        let delay = max(0, attempt.lifecycle.deadline - ProcessInfo.processInfo.systemUptime)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: watchdog)
+    }
+
+    private func expireIfNeeded(_ attempt: ConnectAttempt) -> Bool {
+        guard let phase = attempt.lifecycle.expiredPhase(at: ProcessInfo.processInfo.systemUptime) else { return false }
+        completeConnect(
+            attempt, code: "CONNECTION_TIMEOUT",
+            message: phase == .request
+                ? "Timed out waiting for the iOS Wi-Fi configuration request."
+                : "Timed out waiting for Wi-Fi connection confirmation.",
+            stage: phase.rawValue
+        )
+        return true
+    }
+
+    private func verifyConnectedSsid(_ attempt: ConnectAttempt) {
+        guard activeConnectAttempt === attempt, !expireIfNeeded(attempt) else { return }
+        // The independent verification watchdog also bounds a missing fetchCurrent callback.
+        NEHotspotNetwork.fetchCurrent { [weak self] network in
+            DispatchQueue.main.async {
+                guard let self = self, self.activeConnectAttempt === attempt, !self.expireIfNeeded(attempt) else { return }
+                let previous = attempt.lifecycle.verification
+                if attempt.lifecycle.observe(
+                    ssid: network?.ssid, expected: attempt.ssid, at: ProcessInfo.processInfo.systemUptime
+                ) {
+                    self.logConnect(attempt, event: "verification:match")
+                    self.completeConnect(attempt)
+                    return
+                }
+                if previous != attempt.lifecycle.verification {
+                    self.logConnect(attempt, event: "verification:\(attempt.lifecycle.verification.rawValue)")
+                }
+                let poll = DispatchWorkItem { [weak self, weak attempt] in
+                    guard let self = self, let attempt = attempt else { return }
+                    self.verifyConnectedSsid(attempt)
+                }
+                attempt.poll = poll
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.ssidVerifyPollSeconds, execute: poll)
+            }
+        }
+    }
+
+    private func completeConnect(
+        _ attempt: ConnectAttempt, code: String? = nil, message: String = "",
+        stage: String = "verification", error: NSError? = nil
+    ) {
+        guard activeConnectAttempt === attempt, attempt.lifecycle.finish() else { return }
+        activeConnectAttempt = nil
+        attempt.watchdog?.cancel()
+        attempt.poll?.cancel()
+        attempt.watchdog = nil
+        attempt.poll = nil
+        guard let call = attempt.call else { return }
+        attempt.call = nil
+        logConnect(attempt, event: code.map { "failure:\($0)" } ?? "success")
+        if let code = code {
+            rejectConnect(
+                call, code: code, message: message, stage: stage,
+                nativeCode: error?.code, nativeMessage: error?.localizedDescription,
+                error: error, attempt: attempt
+            )
+        } else {
+            call.resolve()
+        }
+        // Timeout/error intentionally preserves persistent configuration. Only disconnect
+        // requests removal; the OS apply operation itself cannot be cancelled here.
+    }
+
+    private func removeConfigurationForDisconnect(_ ssid: String) {
+        let cleanupGeneration = configurationOwnership.claim(ssid: ssid)
+        for pending in pendingApplications.values {
+            if let attempt = pending.attempt, attempt.ssid == ssid {
+                attempt.removeWhenAppliedGeneration = cleanupGeneration
+            }
+        }
+        hotspotManager?.removeConfiguration(forSSID: ssid)
+        if lastRequestedSSID == ssid {
+            lastRequestedSSID = nil
+        }
+    }
+
+    private func removeCancelledConfigurationIfNeeded(_ attempt: ConnectAttempt) {
+        guard let generation = attempt.removeWhenAppliedGeneration,
+              configurationOwnership.isCurrent(ssid: attempt.ssid, generation: generation) else { return }
+        hotspotManager?.removeConfiguration(forSSID: attempt.ssid)
+        logConnect(attempt, event: "cancelled-configuration-cleanup")
+    }
+
+    private func logConnect(_ attempt: ConnectAttempt, event: String) {
+        let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - attempt.lifecycle.startedAt) * 1000)
+        NSLog("CapacitorWifi connect attempt=%ld elapsedMs=%ld event=%@", attempt.generation, elapsedMs, event)
     }
 
     private func isValidWpaPassphrase(_ password: String) -> Bool {
@@ -482,11 +618,18 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
         stage: String,
         nativeCode: Int?,
         nativeMessage: String?,
-        error: Error?
+        error: Error?,
+        attempt: ConnectAttempt? = nil
     ) {
         var data = JSObject()
         data["platform"] = "ios"
         data["connectionStage"] = stage
+        if let attempt = attempt {
+            data["elapsedMs"] = (ProcessInfo.processInfo.systemUptime - attempt.lifecycle.startedAt) * 1000
+            if stage == "verification" {
+                data["ssidVerification"] = attempt.lifecycle.verification.rawValue
+            }
+        }
         if let nativeCode = nativeCode {
             data["nativeCode"] = nativeCode
         }

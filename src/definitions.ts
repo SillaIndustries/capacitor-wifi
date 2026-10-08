@@ -33,12 +33,32 @@ export interface CapacitorWifiPlugin {
    * Set autoRouteTraffic to true to bind app traffic to the connected network (useful for local/device-hosted APs).
    * For a persistent connection on Android, use addNetwork() instead.
    * On iOS, this creates a persistent connection.
+   * iOS allows requestTimeoutMs (default 120000) for the configuration request and system
+   * consent prompt, then starts timeoutMs (default 30000) to confirm the requested SSID.
+   * A timeout/error keeps the persistent iOS configuration; the OS may finish joining later.
+   * Use disconnect() to cancel plugin verification and request configuration removal.
+   * The plugin cannot cancel Apple's pending system operation or dismiss its prompt.
+   * Android 10+ requests do not require internet access, regardless of autoRouteTraffic.
+   * Android SSID verification requires precise location permission and enabled location services.
+   * On Android 12+, verification uses location-inclusive callbacks for the requested network.
    *
    * Resolves only after the device is confirmed associated with the requested SSID.
+   * On Android, autoRouteTraffic: true also requires successful process binding;
+   * a binding failure rejects with CONNECTION_FAILED. Association does not prove that
+   * a charger or other local service is ready; check that service separately.
+   * Successful Android 10+ temporary connections are retained until disconnect(), replacement,
+   * network loss, or plugin destruction. Failure/cancellation releases the request and
+   * any process binding still owned by the plugin.
    * On failure, rejects with a Capacitor error that includes a stable `code`
    * from {@link WifiConnectionErrorCode}. Prefer `error.code` over parsing `error.message`.
    * Specific codes are returned only when the native OS provides that reason;
    * otherwise the plugin returns `CONNECTION_FAILED`.
+   * Errors from a started native attempt include optional data.ssidVerification
+   * ('unavailable', 'mismatch', or 'match') and data.elapsedMs (Android excludes location authorization).
+   * On iOS, SSID observation is included for verification-stage errors.
+   * data.bindingSucceeded is Android-only and included when process binding was attempted.
+   * data.connectionStage distinguishes request/association from verification deadlines;
+   * unavailable SSID information is not proof that the phone failed to join.
    *
    * @param options - Connection options
    * @returns Promise that resolves when connected
@@ -73,6 +93,14 @@ export interface CapacitorWifiPlugin {
   /**
    * Disconnect from the current Wi-Fi network.
    * On iOS, only disconnects from networks that were added via this plugin.
+   * Cancels a pending iOS connect() with CONNECTION_FAILED. An explicit SSID selects
+   * the configuration to remove; otherwise iOS targets the pending or most recently
+   * requested connection, falling back to the current SSID if no target is tracked.
+   * That fallback lookup is bounded to 120000 ms and can reject with CONNECTION_TIMEOUT.
+   * Late native results cannot resolve a cancelled call or remove a newer request for
+   * the same SSID. Saved networks owned by the user or another app cannot be removed.
+   * On Android, cancels a pending connect() with CONNECTION_FAILED and releases the
+   * retained Wi-Fi request and any process binding still owned by the plugin.
    *
    * @param options - Optional disconnect options
    * @returns Promise that resolves when disconnected
@@ -407,6 +435,10 @@ export interface ConnectOptions {
    * Whether to automatically route app traffic through the connected Wi-Fi network (Android only)
    * When enabled, it binds the app process to the connected network using ConnectivityManager.bindProcessToNetwork()
    * This is useful for connecting to local/device-hosted APs (e.g., ESP32, IoT devices) that don't have internet access.
+   * Does not require the Wi-Fi network to provide internet access. If process binding
+   * fails, connect() rejects with CONNECTION_FAILED and data.bindingSucceeded is false.
+   * While bound to an offline AP, app cloud requests may fail even if cellular is available.
+   * Disconnect or replace the connection to release the plugin-owned routing.
    *
    * @since 7.0.0
    * @default false
@@ -417,11 +449,31 @@ export interface ConnectOptions {
    * Maximum time in milliseconds to wait for confirmation that the device is associated
    * with the requested SSID before rejecting with `CONNECTION_TIMEOUT`.
    * Must be a positive number when provided.
+   * On Android, the budget starts after location authorization and before the native
+   * Wi-Fi request, so time spent in the system Wi-Fi consent dialog counts toward it.
+   * On Android 10+, a timeout releases the temporary request and plugin-owned process binding.
+   * On iOS, this is a separate verification budget starting after the configuration
+   * request succeeds (or reports alreadyAssociated); system consent uses requestTimeoutMs.
+   * iOS accepts finite positive values up to 600000 ms and retains configuration on timeout.
+   * Native watchdogs run when the app can execute; background suspension can delay delivery.
    *
    * @since 8.5.0
    * @default 30000
    */
   timeoutMs?: number;
+
+  /**
+   * Maximum time in milliseconds for the iOS hotspot configuration request to complete,
+   * including the system consent prompt. iOS only; ignored on Android and Web.
+   * After success/alreadyAssociated, timeoutMs provides a separate SSID verification budget.
+   * Must be a finite positive number no greater than 600000 when provided on iOS.
+   * Expiry rejects with CONNECTION_TIMEOUT and data.connectionStage: 'request', retaining
+   * the persistent configuration. Apple's operation can complete after the plugin times out.
+   * Watchdog delivery can be delayed while the app is suspended.
+   *
+   * @default 120000
+   */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -486,6 +538,9 @@ export enum WifiConnectionErrorCode {
 
   /**
    * The connection failed, but the platform did not provide a reliable detailed reason.
+   * Also returned on Android when requested process binding fails or disconnect()
+   * cancels a pending connection.
+   * On iOS, disconnect() also cancels a pending connection with this code.
    *
    * @since 8.5.0
    */
@@ -542,6 +597,24 @@ export interface WifiConnectionErrorData {
   androidApiLevel?: number;
 
   /**
+   * Requested-SSID observation at failure on Android/iOS: unreadable/redacted, a known mismatch,
+   * or a match. Unavailable information is not proof of association failure.
+   * iOS includes this field for verification-stage errors.
+   */
+  ssidVerification?: 'unavailable' | 'mismatch' | 'match';
+
+  /**
+   * Android process-binding result when autoRouteTraffic was requested and binding attempted.
+   */
+  bindingSucceeded?: boolean;
+
+  /**
+   * Elapsed time in milliseconds since the native connection attempt started on Android/iOS.
+   * Android excludes the location authorization prompt; iOS includes request and verification time.
+   */
+  elapsedMs?: number;
+
+  /**
    * Stage of the connection flow where the failure occurred
    *
    * @since 8.5.0
@@ -564,6 +637,10 @@ export interface WifiConnectionErrorData {
 export interface DisconnectOptions {
   /**
    * The SSID of the network to disconnect from (optional)
+   * On iOS, omission prefers the pending or most recently requested connection; if neither
+   * is tracked, the plugin reads the current SSID. Supplying the app-owned target is useful
+   * after an app restart. Cancelling a pending attempt does not remove a different SSID's
+   * configuration when an explicit target was supplied.
    *
    * @since 7.0.0
    */

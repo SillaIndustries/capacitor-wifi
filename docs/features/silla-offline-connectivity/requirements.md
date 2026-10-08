@@ -1,6 +1,6 @@
 # Requirements
 
-Status: Proposed. IDs are stable; none of the behavior below is asserted delivered.
+Status: M1/M2 scope authorized for implementation. Device acceptance criteria remain unverified and reviews are batched by owner exception; requirements outside these milestones remain proposed. No milestone is accepted.
 
 ## Scope and User Workflows
 
@@ -8,7 +8,7 @@ Connect to offline charger Wi-Fi, establish local communication, recover from fa
 
 ## Functional Requirements
 
-Every row states an observable requirement and its acceptance criterion. Must/Should/Could express proposed priority, not approval.
+Every row states an observable requirement and its acceptance criterion. M1 covers FR-001–FR-008; M2 covers FR-009–FR-011. Both include initial FR-015–FR-016 diagnostics and applicable QR-001–QR-005. Broader diagnostic exports, complete release controls, additional iOS changes, and Silla changes remain future scope.
 
 | ID | Priority | Requirement | Acceptance criterion | Owner |
 | --- | --- | --- | --- | --- |
@@ -17,12 +17,12 @@ Every row states an observable requirement and its acceptance criterion. Must/Sh
 | FR-003 | Must | Safely handle redacted primary information and fallback | Unknown primary SSID does not automatically skip eligible fallback; another/default Wi-Fi network cannot prove the requested network | Plugin |
 | FR-004 | Must | Retain successful temporary Android connectivity | Local HTTP and WebSocket traffic continue after resolution until disconnect/replacement | Plugin |
 | FR-005 | Must | Release only attempt-owned resources | Failure, cancellation, and replacement release the owning callback/binding; stale callbacks cannot unbind or settle a newer attempt | Plugin |
-| FR-006 | Must | Make requested routing results observable | Failed process binding is recorded and follows an explicitly approved success/failure contract | Plugin |
+| FR-006 | Must | Require requested routing | When autoRouteTraffic is true, binding failure rejects connect with CONNECTION_FAILED and records bindingSucceeded: false; failed requests are cleaned up | Plugin |
 | FR-007 | Must | Restore routing after disconnect/failure | Normal cloud traffic recovers after an owned binding is released | Plugin + Silla |
-| FR-008 | Should | Keep offline-network eligibility independent of routing policy | Cellular-enabled offline AP works under the approved network-request capability policy; document results for both routing options | Plugin |
-| FR-009 | Must | Give iOS timeouts a precise bounded contract | Delayed consent and pending apply follow the documented budget; late OS completion cannot settle an expired call again | Plugin |
+| FR-008 | Should | Keep offline-network eligibility independent of routing policy | Android 10+ requests do not require internet access for either routing option; cellular-enabled offline AP access is validated on hardware | Plugin |
+| FR-009 | Must | Give iOS separate bounded waiting periods | requestTimeoutMs defaults to 120000 for apply/consent; timeoutMs defaults to a fresh 30000 verification budget after success/alreadyAssociated. Each iOS value is finite, positive, and at most 600000. Independent watchdogs settle missing native callbacks, and late OS completion cannot settle again | Plugin |
 | FR-010 | Must | Make iOS cancellation and completion deterministic | Disconnect during apply/verification invalidates the attempt; each call settles once and subsequent connect remains usable | Plugin |
-| FR-011 | Must | Define owned iOS configuration retention | Failure/disconnect applies the approved policy to the requested app-owned configuration without removing unrelated or pre-existing working state | Plugin |
+| FR-011 | Must | Retain iOS configuration until explicit disconnect | Timeout/error preserves persistent configuration, including pre-existing app-owned configuration. Disconnect removes the selected app-owned target; late cancellation cleanup cannot remove a newer same-SSID request. User/other-app configurations are outside removal ownership | Plugin |
 | FR-012 | Must | Separate connection milestones | Docs and results distinguish request, association, routing where applicable, IP readiness, and service readiness; connect resolution has an explicit boundary | Plugin + Silla |
 | FR-013 | Should | Supply useful network/IP readiness information | Silla can distinguish absent IP and link-local IPv4 from usable configuration; lack of internet is not a readiness failure | Plugin + Silla |
 | FR-014 | Must | Verify charger services in the app | Silla checks actual local service readiness after native success and reports DHCP/routing/service failures separately | Silla |
@@ -61,7 +61,7 @@ All attempts require bounded plugin outcomes, single settlement, explicit owners
 
 ## Dependencies and Open Questions
 
-Physical devices, supported-version matrix, Silla integration repository, signed iOS entitlements, and owner acceptance are required. Before the corresponding slice, resolve timeout budget, whether requested binding failure rejects connect, and configuration retention policy. Temporary iOS configuration remains experimental until evidence supports it.
+Physical devices, supported-version matrix, Silla integration repository, signed iOS entitlements, and owner acceptance are required. M1 routing/offline choices and M2 separate budgets/retention were explicitly approved on 2026-10-08. Android retains its 30-second request/consent budget after location authorization. iOS uses the separate budgets in FR-009; Apple can finish applying after plugin timeout/cancellation, and a retry can receive native pending. Plugin cancellation does not dismiss the OS prompt. Background suspension can delay watchdog delivery. Temporary iOS configuration remains experimental.
 
 ## Requirements Review Checklist
 

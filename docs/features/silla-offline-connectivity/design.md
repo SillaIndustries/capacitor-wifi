@@ -1,6 +1,6 @@
 # Design
 
-Status: Proposed architecture; verify current implementation before authorization.
+Status: M1/M2 implemented for batched owner review; later architecture remains proposed. Device behavior and full native iOS compilation are unverified.
 
 ## Design Summary and Current System
 
@@ -21,6 +21,34 @@ Retain the generic Capacitor plugin and introduce explicit attempt ownership and
 
 ## Requirement Traceability
 
+### M1 implementation boundaries
+
+Current 8.5.5 source was checked against the Android audit. Connection entry points, permission continuations, callback state changes, timers, completion, and cleanup now run on one main handler. A generation identifies each native attempt; callbacks also require a pending attempt before verification/binding. Completion retains the successful callback; failure, loss, disconnect, replacement, and destruction release owned resources.
+
+`WifiConnectionState` holds requested-network identity, available/mismatch/match observation policy, and terminal/released state. `WifiProcessBinding` tracks only bindings this plugin establishes, avoids clearing a different component's binding, and retains ownership if cleanup fails so it can be retried. Cleanup failures block replacement rather than silently discarding callback ownership.
+
+Android 12+ uses `FLAG_INCLUDE_LOCATION_INFO` and supplied `onCapabilitiesChanged` capabilities, never a redacted snapshot to read SSID. Android 10/11 may use the legacy SSID reader only when exactly one visible Wi-Fi network exists and equals the requested network. A known mismatch is not overridden by fallback. Below Android 10 the legacy SSID reader remains; routing selects a Wi-Fi network rather than a potentially cellular default.
+
+Modern Android checks precise location permission and location services before the native request; the existing location permission callback now resumes the appropriate platform path and ignores cancelled calls. Unknown SSID observations remain bounded by the connection deadline and are labeled unavailable rather than falsely diagnosed as association failure.
+
+Owner-approved contract: all modern requests remove the internet capability requirement; routing remains optional, and requested binding failure rejects with CONNECTION_FAILED. Android timeout still includes Wi-Fi consent time, but begins after location authorization. Success means SSID association plus requested binding, not charger-service readiness.
+
+Initial diagnostics are native log events without SSIDs/passwords, and optional error fields `ssidVerification`, `bindingSucceeded`, and `elapsedMs`. No support snapshot/event API or persistent diagnostic buffer is introduced in M1.
+
+### M2 implementation boundaries
+
+Connection/disconnect state, native completions, and scheduled work are confined to the main queue. A `ConnectAttempt` owns its call, target, identity, lifecycle, watchdog, and polling work. Identity is rechecked after every native callback; terminal completion cancels work, clears the active slot, and releases the call reference exactly once.
+
+`WifiConnectionLifecycle` is Foundation-only policy with a monotonic request deadline and a fresh verification deadline. Request default is 120 seconds; verification default is 30 seconds. An independent watchdog runs while apply or fetchCurrent is pending. Callback processing rechecks deadlines, preventing delayed queue delivery from producing success after expiry. Unknown SSID information remains distinct from a known mismatch. The app must be able to execute for watchdog delivery.
+
+`WifiConfigurationOwnership` versions mutations per SSID. Disconnect cancels the plugin attempt, then removes its explicit target or the pending/latest connect target. Pending OS apply contexts are weakly indexed so a disconnect after timeout can mark their late completion for cleanup without retaining calls or creating ownership cycles. Cleanup is suppressed when a newer connect/addNetwork request owns that same target. addNetwork mutations are serialized/registered for this protection; its existing completion contract is otherwise unchanged.
+
+If no connection target is tracked, disconnect preserves the existing current-SSID fallback with a 120-second lookup watchdog and a mutation-sequence check. A delayed fallback cannot remove a newly requested configuration. An explicit different SSID cancels pending verification but removes only the explicit target.
+
+Persistent configuration (`joinOnce = false`) is retained on error/timeout; no rollback snapshot or automatic failure removal is needed. OS apply cannot be cancelled, so association may occur later or retry may report native pending. Native events contain attempt/time/stage/observation only, no credentials or SSIDs. iOS adds elapsedMs and verification-stage ssidVerification to errors.
+
+The existing SPM source target and CocoaPods source glob include the new policy file without integration changes. XCTest policy tests also run in an isolated temporary Swift package on Linux via `bun run test:ios:lifecycle`; this does not compile the Capacitor/NetworkExtension adapter.
+
 | Requirements | Design element |
 | --- | --- |
 | FR-001–FR-004 | Requested-network callbacks, observation states, identity-safe fallback, retained successful request |
@@ -35,7 +63,7 @@ Retain the generic Capacitor plugin and introduce explicit attempt ownership and
 
 ## Interfaces and Contracts
 
-Preserve `connect(): Promise<void>`, current options/defaults, and stable error codes initially. Specify the resolution boundary and timeout scope before implementation. Any new diagnostics, observation fields, authorization details, or `joinOnce` option are additive proposals to document in `src/definitions.ts`; generate public API docs with docgen.
+Preserve `connect(): Promise<void>`, stable error codes, and existing persistent/route defaults. M1 changes requested binding failure to rejection and removes the modern internet requirement. M2 adds iOS-only requestTimeoutMs, makes iOS timeoutMs a post-apply verification budget, and validates iOS budgets at a maximum of ten minutes. The owner explicitly selected separate waiting periods and retention until disconnect. Error fields are additive. Broader observation APIs, authorization APIs, and `joinOnce` remain proposals.
 
 QR-005 applies to every API contract change, including behavior-only fixes. Update `src/definitions.ts` types/JSDoc and regenerate the root README API sections with `bun run docgen` or `bun run build` in the same change. Review relevant handwritten guidance/examples too. Generated sections must never be edited manually.
 
@@ -64,4 +92,4 @@ Ship immutable internal versions against a validated baseline with rollback refe
 
 ## Open Questions and Design Review
 
-Before the relevant slice: approve timeout semantics, routing-failure behavior, configuration retention, and identifier collection. Check current code, API guards, concurrency, privacy, and compatibility; record material decisions. Design gate remains Not ready.
+M1/M2 product choices are approved; technical design awaits combined owner review. Device matrix and native iOS build evidence are outstanding. Broader identifier collection requires a later decision.

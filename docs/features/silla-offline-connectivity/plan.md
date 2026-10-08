@@ -1,10 +1,12 @@
 # Implementation Plan
 
-Status: Discovery backlog. No formal milestones defined or authorized. The proposed slices below capture prioritization without inventing approved discovery milestones.
+Status: M1 Android and M2 iOS implementations await combined device review. M2 product choices were explicitly resolved; later delivery slices remain proposals.
 
 ## Initiative Coordination
 
 Initiative: None. This dossier owns ordering. One implementation milestone at a time unless the owner explicitly authorizes parallel work.
+
+Owner exception, 2026-10-08: implementation may advance before per-milestone device review. M1's pending review/acceptance does not block M2 development. Automated verification and documentation remain per milestone; combine physical-device review and preserve each milestone's evidence and acceptance status. See D-006.
 
 ## Proposed Delivery Order
 
@@ -23,12 +25,88 @@ QR-005 applies to every slice that changes the plugin API contract. Include upda
 
 ## First Slice Preparation
 
-- [ ] Recheck Android code in the current 8.5.5 checkout against the audit.
+- [x] Recheck Android code in the current 8.5.5 checkout against the audit.
 - [ ] Confirm required device/API matrix and owner of acceptance.
-- [ ] Resolve requested-routing failure semantics and any capability-policy change.
-- [ ] Refine S1 requirements/design and define a formal M1 with synchronized README checklist.
-- [ ] Agree on device scenarios and meaningful lifecycle test mechanisms.
-- [ ] Obtain scope/design/plan review and explicit implementation authorization.
+- [x] Resolve requested-routing failure semantics and any capability-policy change.
+- [x] Refine S1 requirements/design and define a formal M1 with synchronized README checklist.
+- [x] Define initial device scenarios and JUnit state/ownership tests; agree final device matrix with owner.
+- [x] Obtain explicit implementation authorization (owner: begin feature, plus explicit routing/offline choices).
+
+## Milestone Overview
+
+| Milestone | Coordinated stage | Outcome | Requirements | Status | Approval |
+| --- | --- | --- | --- | --- | --- |
+| M1 Android verified offline connection | None | Requested-network verification, required routing when requested, and owned cleanup | FR-001–FR-008; initial FR-015–FR-016; applicable QR-001–QR-005 | Owner refinement | Start authorized 2026-10-08; acceptance pending |
+| M2 iOS bounded/cancellable connection | None | Separate request/verification budgets, single settlement, and retention until explicit disconnect | FR-009–FR-011; initial FR-015–FR-016; applicable QR-001–QR-005 | Owner refinement | Start/behavior authorized 2026-10-08; batched acceptance pending |
+
+## M1: Android verified offline connection
+
+### Outcome and Scope
+
+Silla can request an offline charger network without an internet eligibility requirement, verify the requested network, and require its requested app routing. Failure and disconnect release owned resources. Includes API docs and meaningful state/ownership tests. Excludes iOS implementation, Silla application edits, broad diagnostics API, and publishing an internal release.
+
+### Tasks
+
+- [x] Check current source and resolve product consequences before implementation.
+- [x] Implement location-inclusive callbacks, identity-safe older-API fallback, and distinct SSID observation states.
+- [x] Serialize lifecycle changes; ignore stale/cancelled callbacks and retain successful requests.
+- [x] Require successful requested process binding and implement owned cleanup/retry behavior.
+- [x] Add native request/availability/verification/binding/failure/cleanup diagnostics without credentials.
+- [x] Add JUnit identity/completion and process-binding ownership tests.
+- [x] Update `src/definitions.ts` and regenerate root README API documentation.
+- [x] Build Android debug/release and run unit tests; build Web and run repository lint.
+- [ ] Run physical-device scenarios and obtain owner implementation review.
+- [ ] Perform mandatory whole-slice hardening review after owner review; obtain approval for any hardening work.
+- [ ] Implement/verify approved hardening and consolidate delivered specification/evidence.
+- [ ] Obtain final owner validation and definitive acceptance; synchronize milestone checklist.
+
+### Validation
+
+Automated: `bun run verify:android`, `bun run verify:web`, `bun run lint`; full `bun run verify` attempted but blocked by unavailable Xcode on Linux. Unit tests use existing JUnit dependency; no new runtime dependency. Package scripts now invoke Bun consistently with repository guidance.
+
+Manual: V-001–V-005 and relevant V-009 checks in verification. Primary acceptance device is the affected Android 12 phone; Android 10/11 fallback and Android 12+ callback variants also require device coverage. Final supported matrix/acceptance owner must be confirmed. Browser path: Not applicable.
+
+### Approval to Start
+
+Status: Approved by Silla owner on 2026-10-08 in conversation: begin feature, reject requested-binding failure, allow offline Wi-Fi. Scope: M1 only. Coordinated stage: Not applicable. No definitive acceptance implied.
+
+### Checkpoint Report
+
+Status: Implementation available for owner review. Native debug/release builds and state/ownership tests pass; Web build/docgen and repository lint pass. Physical association, traffic routing, and cleanup recovery remain untested. iOS verification is unavailable on Linux. Android lint has existing unrelated findings; details in verification.
+
+Implementation review decision: Pending, deferred to the combined device review. Browser review guide: Not applicable. Hardening review: Not reached. Definitive owner acceptance: Pending. Owner exception authorizes preparation of M2 while these remain outstanding.
+
+## M2: iOS bounded/cancellable connection
+
+### Outcome and Scope
+
+Users have time to answer Apple's prompt without consuming SSID confirmation time. Missing apply/SSID callbacks have independent plugin watchdogs; disconnect cancels plugin verification and targets the requested app-owned configuration. Persistent configuration survives timeout/error. Includes narrow addNetwork ownership coordination, diagnostics, policy tests, API docs, and combined review coverage. Excludes temporary joinOnce behavior, Silla app changes, reproducing the unexplained iOS association failure, and claiming a native operation can be cancelled.
+
+### Tasks
+
+- [x] Confirm separate waiting periods and retention until disconnect with owner.
+- [x] Replace lock/polling lifecycle with serialized attempt identity and phase-specific watchdogs.
+- [x] Bound pending apply and pending SSID reads, reject stale results, and settle once.
+- [x] Track explicit/pending/latest target and guard late removal against newer same-SSID writes.
+- [x] Preserve configuration on timeout/error and persistent default.
+- [x] Add Foundation policy/ownership XCTest cases and portable test runner without new runtime dependencies.
+- [x] Update `src/definitions.ts` and regenerate root README API documentation.
+- [x] Complete available automated checks and record precise native-build limitations.
+- [ ] Run batched Android/iPhone review and obtain owner implementation review.
+- [ ] Perform whole-slice hardening, obtain approval for changes, and verify approved work.
+- [ ] Consolidate evidence, obtain final owner validation, and record definitive acceptance.
+
+### Validation and Approval to Start
+
+Policy automation: `bun run test:ios:lifecycle`. Syntax: Swift frontend parse of changed sources. Public API/build: `bun run build`, `bun run lint`, and full `bun run verify` attempted. Native iOS adapter compilation/SwiftLint requires macOS/Xcode and remains a separate evidence requirement. Existing SPM and CocoaPods integrations remain intact.
+
+Manual: combined V-001–V-007 plus iOS retention/late cleanup and relevant V-009/V-010. Browser path: Not applicable.
+
+Start approved by Silla owner on 2026-10-08: continue under batched device-validation exception; explicit selections of separate waiting periods and keep-until-disconnect policy. Scope: M2. Acceptance: Pending.
+
+### Checkpoint, Hardening, and Acceptance
+
+Implementation available for combined review. Automated evidence is recorded in verification; native iOS build and phone testing remain outstanding. Implementation review: Pending. Hardening: Not reached. Definitive acceptance: Pending.
 
 ## Validation Per Slice
 
@@ -50,7 +128,7 @@ For every milestone:
 6. Consolidate delivered specifications and evidence; verify API contract changes are documented in `src/definitions.ts` and the regenerated root README API sections, with relevant handwritten guidance/examples updated.
 7. Obtain final owner validation and definitive acceptance; synchronize README and decisions.
 
-Approval to start: Not approved. Checkpoint: Not reached. Hardening: Not reached. Definitive acceptance: Pending. No slice is delivered.
+M1/M2 implementation is authorized and available for batched review. No milestone has definitive acceptance; later slices remain proposals.
 
 ## Plan Review Checklist
 

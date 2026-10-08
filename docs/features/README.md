@@ -16,7 +16,7 @@ Every plugin API contract change must include an update to the API documentation
 
 | Feature | Status | First proposed delivery slice |
 | --- | --- | --- |
-| [Silla offline charger connectivity](silla-offline-connectivity/README.md) | Discovery | Android requested-network verification and owned cleanup |
+| [Silla offline charger connectivity](silla-offline-connectivity/README.md) | Implementation — M1/M2 awaiting batched review | Android verification/cleanup and iOS bounded cancellation |
 
 The supplied [_template](_template/README.md) is the dossier structure. This index supplies the shared process sections referenced by that template; feature-specific proposals remain subject to owner review.
 
@@ -45,6 +45,10 @@ Discovery dossiers have no formal milestones until scope is refined. Once define
 7. Record definitive acceptance before accepting the milestone or authorizing the next.
 
 Only one milestone is active unless the owner authorizes parallel work. No approval is inferred from documentation preparation.
+
+### Silla batched device-validation exception
+
+On 2026-10-08 the owner authorized continued development of the offline-connectivity feature before completing each milestone's phone tests, so multiple improvements can be tested together. Completed implementations may wait for a shared device review while the next milestone is developed. Keep automated checks and API documentation updates within each milestone, record outstanding device evidence, and leave acceptance checkboxes unchecked. Combined owner review, hardening, and final validation are still required before definitive acceptance or a production-ready claim.
 
 ## Owner refinement verification
 
