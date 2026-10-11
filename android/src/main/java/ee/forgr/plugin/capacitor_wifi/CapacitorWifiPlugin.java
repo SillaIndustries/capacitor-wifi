@@ -10,6 +10,8 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.location.LocationManager;
 import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
@@ -47,7 +49,9 @@ import java.net.NetworkInterface;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
+import org.json.JSONObject;
 
 @CapacitorPlugin(
     name = "CapacitorWifi",
@@ -70,6 +74,7 @@ public class CapacitorWifiPlugin extends Plugin {
     private static final String EXTRA_WIFI_PRE_SHARED_KEY = "wifi_psk";
     private static final int WIFI_SECURITY_WPA_PSK = 2;
     private static final int DEFAULT_CONNECT_TIMEOUT_MS = 30000;
+    private static final int MAX_CONNECT_TIMEOUT_MS = 600000;
     private static final long SSID_VERIFY_POLL_MS = 500;
 
     // Connection methods, callbacks, timers, and cleanup all run on this handler.
@@ -87,6 +92,10 @@ public class CapacitorWifiPlugin extends Plugin {
     private String attemptedCallId;
     private long connectStartedAt;
     private boolean destroyed;
+    private long diagnosticSequence;
+    private String diagnosticCallId;
+    private WifiConnectionDiagnostics lastDiagnostics;
+    private WifiConnectionDiagnostics nativeDiagnostics;
 
     @Override
     public void load() {
@@ -292,6 +301,13 @@ public class CapacitorWifiPlugin extends Plugin {
         }
         // Reserve the slot early so permission prompts cannot overlap with another connect().
         activeConnectCall = call;
+        diagnosticCallId = call.getCallbackId();
+        lastDiagnostics = new WifiConnectionDiagnostics(
+            ++diagnosticSequence,
+            System.currentTimeMillis(),
+            SystemClock.elapsedRealtime(),
+            Boolean.TRUE.equals(call.getBoolean("autoRouteTraffic", false))
+        );
 
         continueConnect(call);
     }
@@ -320,7 +336,12 @@ public class CapacitorWifiPlugin extends Plugin {
 
         Integer timeoutMs = resolveTimeoutMs(call);
         if (timeoutMs == null) {
-            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive number.", "validation");
+            rejectConnectAndClear(
+                call,
+                "INVALID_CONFIGURATION",
+                "timeoutMs must be a positive number no greater than 600000.",
+                "validation"
+            );
             return;
         }
 
@@ -339,6 +360,12 @@ public class CapacitorWifiPlugin extends Plugin {
         }
 
         if (getContext().checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            lastDiagnostics.record(
+                WifiConnectionDiagnostics.EventType.PERMISSION_REQUESTED,
+                "permission",
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
             requestPermissionForAlias("location", call, "connectCallback");
             return;
         }
@@ -419,6 +446,12 @@ public class CapacitorWifiPlugin extends Plugin {
 
     private void connectLegacy(PluginCall call) {
         if (getPermissionState("location") != PermissionState.GRANTED) {
+            lastDiagnostics.record(
+                WifiConnectionDiagnostics.EventType.PERMISSION_REQUESTED,
+                "permission",
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
             requestPermissionForAlias("location", call, "connectCallback");
             return;
         }
@@ -431,7 +464,12 @@ public class CapacitorWifiPlugin extends Plugin {
 
         Integer timeoutMs = resolveTimeoutMs(call);
         if (timeoutMs == null) {
-            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive number.", "validation");
+            rejectConnectAndClear(
+                call,
+                "INVALID_CONFIGURATION",
+                "timeoutMs must be a positive number no greater than 600000.",
+                "validation"
+            );
             return;
         }
 
@@ -982,6 +1020,29 @@ public class CapacitorWifiPlugin extends Plugin {
         }
     }
 
+    @PluginMethod
+    public void getConnectionDiagnostics(PluginCall call) {
+        connectHandler.post(() -> {
+            if (lastDiagnostics != null) {
+                observeConnectionIp(lastDiagnostics, connectionState == null ? null : connectionState.getNetwork());
+            }
+            JSObject result = new JSObject();
+            result.put("platform", "android");
+            result.put("pluginVersion", pluginVersion);
+            result.put("capturedAt", System.currentTimeMillis());
+            result.put("eventLimit", WifiConnectionDiagnostics.EVENT_LIMIT);
+            result.put("droppedEventCount", 0);
+            result.put("events", new JSArray());
+            if (lastDiagnostics != null) {
+                Map<String, Object> snapshot = lastDiagnostics.snapshot(SystemClock.elapsedRealtime());
+                result.put("attempt", new JSONObject((Map<?, ?>) snapshot.get("attempt")));
+                result.put("events", new JSArray((List<?>) snapshot.get("events")));
+                result.put("droppedEventCount", snapshot.get("droppedEventCount"));
+            }
+            call.resolve(result);
+        });
+    }
+
     @PermissionCallback
     private void addNetworkCallback(PluginCall call) {
         if (getPermissionState("location") == PermissionState.GRANTED) {
@@ -1088,7 +1149,7 @@ public class CapacitorWifiPlugin extends Plugin {
             return DEFAULT_CONNECT_TIMEOUT_MS;
         }
         Integer timeoutMs = call.getInt("timeoutMs");
-        if (timeoutMs == null || timeoutMs <= 0) {
+        if (timeoutMs == null || timeoutMs <= 0 || timeoutMs > MAX_CONNECT_TIMEOUT_MS) {
             return null;
         }
         return timeoutMs;
@@ -1118,8 +1179,9 @@ public class CapacitorWifiPlugin extends Plugin {
             return -1;
         }
         int generation = ++connectGeneration;
+        nativeDiagnostics = lastDiagnostics;
         activeConnectCall = call;
-        connectionState = new WifiConnectionState<>(ssid);
+        connectionState = new WifiConnectionState<>(ssid, SystemClock.elapsedRealtime() + timeoutMs);
         pendingAutoRouteTraffic = autoRouteTraffic;
         connectionStage = "association";
         ssidVerification = WifiConnectionState.Verification.UNAVAILABLE;
@@ -1127,6 +1189,7 @@ public class CapacitorWifiPlugin extends Plugin {
         connectStartedAt = SystemClock.elapsedRealtime();
         attemptedCallId = call.getCallbackId();
         logConnect("request");
+        recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.REQUEST_STARTED, "association");
 
         connectTimeoutRunnable = () ->
             completeConnectFailure(
@@ -1150,12 +1213,29 @@ public class CapacitorWifiPlugin extends Plugin {
         return isCurrentConnectAttempt(generation) && activeConnectCall != null && connectionState != null && connectionState.isPending();
     }
 
+    private boolean expireConnectIfNeeded(int generation) {
+        if (!isPendingConnectAttempt(generation) || !connectionState.hasExpired(SystemClock.elapsedRealtime())) {
+            return false;
+        }
+        completeConnectFailure(
+            generation,
+            "CONNECTION_TIMEOUT",
+            "Timed out waiting for Wi-Fi connection confirmation.",
+            connectionStage,
+            null,
+            null,
+            true
+        );
+        return true;
+    }
+
     private void startSsidVerification(int generation, @Nullable Network network, String expectedSsid, boolean keepCallbackOnSuccess) {
+        connectionStage = "verification";
         clearSsidVerification();
         ssidVerifyRunnable = new Runnable() {
             @Override
             public void run() {
-                if (!isPendingConnectAttempt(generation)) {
+                if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation)) {
                     return;
                 }
 
@@ -1196,6 +1276,13 @@ public class CapacitorWifiPlugin extends Plugin {
         }
         if (previous != ssidVerification) {
             logConnect("verification:" + ssidVerification.name().toLowerCase(java.util.Locale.ROOT));
+        }
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.observeSsid(
+                ssidVerification.name().toLowerCase(java.util.Locale.ROOT),
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
         }
         return ssidVerification == WifiConnectionState.Verification.MATCH;
     }
@@ -1286,7 +1373,7 @@ public class CapacitorWifiPlugin extends Plugin {
     }
 
     private void completeConnectSuccess(int generation, @Nullable Network network, boolean keepCallbackOnSuccess) {
-        if (!isPendingConnectAttempt(generation)) {
+        if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation)) {
             return;
         }
 
@@ -1319,6 +1406,10 @@ public class CapacitorWifiPlugin extends Plugin {
         clearSsidVerification();
         removeLocalOnlyFailureListener();
         logConnect("success");
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.succeed(System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            observeConnectionIp(nativeDiagnostics, network);
+        }
         call.resolve();
     }
 
@@ -1345,6 +1436,17 @@ public class CapacitorWifiPlugin extends Plugin {
         clearSsidVerification();
         removeLocalOnlyFailureListener();
 
+        WifiConnectionDiagnostics diagnostic = call.getCallbackId().equals(attemptedCallId) ? nativeDiagnostics : lastDiagnostics;
+        if (diagnostic != null) {
+            diagnostic.fail(
+                code,
+                stage,
+                nativeCode,
+                message.startsWith("Connection canceled"),
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
+        }
         logConnect("failure:" + code);
         rejectConnect(call, code, message, stage, nativeCode, nativeMessage);
         if (cleanupNetworkCallback) {
@@ -1373,11 +1475,12 @@ public class CapacitorWifiPlugin extends Plugin {
         @Override
         public void onAvailable(@NonNull Network network) {
             connectHandler.post(() -> {
-                if (!isPendingConnectAttempt(generation) || !connectionState.onAvailable(network)) {
+                if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation) || !connectionState.onAvailable(network)) {
                     return;
                 }
                 connectionStage = "verification";
                 logConnect("available");
+                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_AVAILABLE, "verification");
                 if (Boolean.TRUE.equals(pendingAutoRouteTraffic) && !bindConnectNetwork(generation, network)) {
                     return;
                 }
@@ -1388,16 +1491,40 @@ public class CapacitorWifiPlugin extends Plugin {
         @Override
         public void onCapabilitiesChanged(@NonNull Network network, @NonNull NetworkCapabilities capabilities) {
             connectHandler.post(() -> {
-                if (!isPendingConnectAttempt(generation)) {
+                if (
+                    !isCurrentConnectAttempt(generation) ||
+                    connectionState == null ||
+                    connectionState.isReleased() ||
+                    expireConnectIfNeeded(generation)
+                ) {
                     return;
                 }
                 TransportInfo transport = capabilities.getTransportInfo();
                 String currentSsid = transport instanceof WifiInfo ? ((WifiInfo) transport).getSSID() : null;
                 if (connectionState.onCapabilities(network, currentSsid)) {
+                    recordNativeDiagnostic(
+                        WifiConnectionDiagnostics.EventType.CAPABILITIES_CHANGED,
+                        isPendingConnectAttempt(generation) ? "verification" : "connected"
+                    );
                     // Use the supplied capabilities: getNetworkCapabilities() redacts SSIDs.
-                    if (ssidMatches(ssid, network)) {
+                    if (ssidMatches(ssid, network) && isPendingConnectAttempt(generation)) {
                         completeConnectSuccess(generation, network, true);
                     }
+                    observeConnectionIp(nativeDiagnostics, network);
+                }
+            });
+        }
+
+        @Override
+        public void onLinkPropertiesChanged(@NonNull Network network, @NonNull LinkProperties properties) {
+            connectHandler.post(() -> {
+                if (
+                    isCurrentConnectAttempt(generation) &&
+                    connectionState != null &&
+                    !connectionState.isReleased() &&
+                    network.equals(connectionState.getNetwork())
+                ) {
+                    observeLinkProperties(nativeDiagnostics, properties);
                 }
             });
         }
@@ -1438,6 +1565,7 @@ public class CapacitorWifiPlugin extends Plugin {
                     );
                 } else {
                     logConnect("lost");
+                    recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_LOST, "cleanup");
                     releaseConnection();
                 }
             });
@@ -1445,18 +1573,24 @@ public class CapacitorWifiPlugin extends Plugin {
     }
 
     private boolean bindConnectNetwork(int generation, Network network) {
-        if (!isPendingConnectAttempt(generation)) {
+        if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation)) {
             return false;
         }
         try {
             bindingSucceeded = processBinding.bind(network);
             logConnect("binding:" + bindingSucceeded);
+            if (nativeDiagnostics != null) {
+                nativeDiagnostics.binding(bindingSucceeded, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
             if (bindingSucceeded) {
                 return true;
             }
         } catch (Exception e) {
             bindingSucceeded = false;
             logConnect("binding:false");
+            if (nativeDiagnostics != null) {
+                nativeDiagnostics.binding(false, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
         }
         completeConnectFailure(
             generation,
@@ -1499,6 +1633,9 @@ public class CapacitorWifiPlugin extends Plugin {
         }
         if (connectionState != null) {
             logConnect("cleanup:" + released);
+            if (nativeDiagnostics != null) {
+                nativeDiagnostics.cleanup(released, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
         }
         return released;
     }
@@ -1506,7 +1643,12 @@ public class CapacitorWifiPlugin extends Plugin {
     private void logConnect(String event) {
         android.util.Log.d(
             "CapacitorWifi",
-            "connect attempt=" + connectGeneration + " elapsedMs=" + (SystemClock.elapsedRealtime() - connectStartedAt) + " event=" + event
+            "connect attempt=" +
+                (nativeDiagnostics == null ? connectGeneration : nativeDiagnostics.id) +
+                " elapsedMs=" +
+                (SystemClock.elapsedRealtime() - connectStartedAt) +
+                " event=" +
+                event
         );
     }
 
@@ -1522,6 +1664,12 @@ public class CapacitorWifiPlugin extends Plugin {
         data.put("platform", "android");
         data.put("androidApiLevel", Build.VERSION.SDK_INT);
         data.put("connectionStage", stage);
+        if (lastDiagnostics != null && call.getCallbackId().equals(diagnosticCallId)) {
+            data.put("attemptId", lastDiagnostics.id);
+            if (lastDiagnostics.isPending()) {
+                lastDiagnostics.fail(code, stage, nativeCode, false, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
+        }
         if (connectionState != null && call.getCallbackId().equals(attemptedCallId)) {
             data.put("ssidVerification", ssidVerification.name().toLowerCase(java.util.Locale.ROOT));
             data.put("elapsedMs", SystemClock.elapsedRealtime() - connectStartedAt);
@@ -1536,6 +1684,50 @@ public class CapacitorWifiPlugin extends Plugin {
             data.put("nativeMessage", nativeMessage);
         }
         call.reject(message, code, data);
+    }
+
+    private void recordNativeDiagnostic(WifiConnectionDiagnostics.EventType type, String stage) {
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.record(type, stage, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+        }
+    }
+
+    private void observeConnectionIp(WifiConnectionDiagnostics diagnostic, @Nullable Network network) {
+        if (diagnostic == null) {
+            return;
+        }
+        if (diagnostic != nativeDiagnostics || connectionState == null || connectionState.isReleased()) {
+            diagnostic.observeIp("unknown", System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            return;
+        }
+        try {
+            if (
+                network == null && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && connectionState.expectedSsid().equals(getLegacySsid())
+            ) {
+                network = getOnlyWifiNetwork();
+            }
+            observeLinkProperties(diagnostic, network == null ? null : connectivityManager.getLinkProperties(network));
+        } catch (Exception e) {
+            diagnostic.observeIp("unknown", System.currentTimeMillis(), SystemClock.elapsedRealtime());
+        }
+    }
+
+    private void observeLinkProperties(WifiConnectionDiagnostics diagnostic, @Nullable LinkProperties properties) {
+        if (diagnostic == null) {
+            return;
+        }
+        List<InetAddress> addresses = null;
+        if (properties != null) {
+            addresses = new ArrayList<>();
+            for (LinkAddress address : properties.getLinkAddresses()) {
+                addresses.add(address.getAddress());
+            }
+        }
+        diagnostic.observeIp(
+            WifiConnectionDiagnostics.classifyAddresses(addresses),
+            System.currentTimeMillis(),
+            SystemClock.elapsedRealtime()
+        );
     }
 
     private void clearConnectTimeout() {

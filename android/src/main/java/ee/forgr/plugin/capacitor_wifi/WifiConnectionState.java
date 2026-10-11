@@ -10,13 +10,23 @@ final class WifiConnectionState<N> {
     }
 
     private final String expectedSsid;
+    private final long deadline;
     private N network;
     private String ssid;
     private boolean pending = true;
     private boolean released;
 
     WifiConnectionState(String expectedSsid) {
+        this(expectedSsid, Long.MAX_VALUE);
+    }
+
+    WifiConnectionState(String expectedSsid, long deadline) {
         this.expectedSsid = expectedSsid;
+        this.deadline = deadline;
+    }
+
+    boolean hasExpired(long now) {
+        return isPending() && now >= deadline;
     }
 
     boolean isPending() {
@@ -31,6 +41,10 @@ final class WifiConnectionState<N> {
         return network;
     }
 
+    String expectedSsid() {
+        return expectedSsid;
+    }
+
     boolean onAvailable(N availableNetwork) {
         if (!isPending()) {
             return false;
@@ -43,7 +57,7 @@ final class WifiConnectionState<N> {
     }
 
     boolean onCapabilities(N observedNetwork, String observedSsid) {
-        if (!isPending() || network == null || !network.equals(observedNetwork)) {
+        if (released || network == null || !network.equals(observedNetwork)) {
             return false;
         }
         ssid = normalizeSsid(observedSsid);

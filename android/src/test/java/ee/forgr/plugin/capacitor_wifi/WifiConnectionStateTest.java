@@ -7,6 +7,26 @@ import org.junit.Test;
 public class WifiConnectionStateTest {
 
     @Test
+    public void deadlineIsCheckedEvenWhenTimeoutRunnableHasNotExecuted() {
+        WifiConnectionState<String> state = new WifiConnectionState<>("charger", 30000);
+        assertFalse(state.hasExpired(29999));
+        assertTrue(state.hasExpired(30000));
+        state.onAvailable("requested-network");
+        state.onCapabilities("requested-network", "charger");
+        assertEquals(WifiConnectionState.Verification.MATCH, state.verify(null, null));
+        assertTrue(state.hasExpired(31000));
+    }
+
+    @Test
+    public void oldDeadlineCannotExpireCompletedOrReleasedAttempt() {
+        WifiConnectionState<String> state = new WifiConnectionState<>("charger", 30000);
+        state.finish();
+        assertFalse(state.hasExpired(31000));
+        state.release();
+        assertFalse(state.hasExpired(32000));
+    }
+
+    @Test
     public void verifiesCallbackInformationForRequestedNetwork() {
         WifiConnectionState<String> state = new WifiConnectionState<>("charger");
         state.onAvailable("requested-network");

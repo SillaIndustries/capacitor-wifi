@@ -23,7 +23,8 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
         CAPPluginMethod(name: "requestPermissions", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "isNetworkSaved", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "shareNetwork", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getPluginVersion", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getPluginVersion", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getConnectionDiagnostics", returnType: CAPPluginReturnPromise)
     ]
 
     private var hotspotManager: NEHotspotConfigurationManager?
@@ -37,21 +38,40 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
     private let defaultConnectTimeoutMs: Double = 30000
     private let defaultRequestTimeoutMs: Double = 120000
     private let ssidVerifyPollSeconds: TimeInterval = 0.5
+    private var diagnosticSequence = 0
+    private var diagnosticCallId: String?
+    private var lastDiagnostics: WifiConnectionDiagnostics?
+    private var lastDiagnosticTarget: String?
 
     private final class ConnectAttempt {
         var call: CAPPluginCall?
         let ssid: String
         let generation: Int
         let lifecycle: WifiConnectionLifecycle
+        let diagnostics: WifiConnectionDiagnostics
         var watchdog: DispatchWorkItem?
         var poll: DispatchWorkItem?
         var removeWhenAppliedGeneration: Int?
 
-        init(call: CAPPluginCall, ssid: String, generation: Int, lifecycle: WifiConnectionLifecycle) {
+        init(call: CAPPluginCall, ssid: String, generation: Int, lifecycle: WifiConnectionLifecycle,
+             diagnostics: WifiConnectionDiagnostics) {
             self.call = call
             self.ssid = ssid
             self.generation = generation
             self.lifecycle = lifecycle
+            self.diagnostics = diagnostics
+        }
+    }
+
+    private final class DiagnosticLookup {
+        var call: CAPPluginCall?
+        let lifecycle: WifiConnectionLifecycle
+
+        init(_ call: CAPPluginCall) {
+            self.call = call
+            lifecycle = WifiConnectionLifecycle(
+                startedAt: ProcessInfo.processInfo.systemUptime, requestSeconds: 5, verificationSeconds: 0
+            )
         }
     }
 
@@ -123,6 +143,14 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             )
             return
         }
+        diagnosticSequence += 1
+        diagnosticCallId = call.callbackId
+        lastDiagnosticTarget = nil
+        let diagnostic = WifiConnectionDiagnostics(
+            id: diagnosticSequence, timestamp: Date().timeIntervalSince1970 * 1000,
+            elapsedClock: ProcessInfo.processInfo.systemUptime * 1000
+        )
+        lastDiagnostics = diagnostic
         guard let ssid = call.getString("ssid"), !ssid.isEmpty else {
             rejectConnect(
                 call,
@@ -191,12 +219,15 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             requestSeconds: requestTimeoutMs / 1000,
             verificationSeconds: timeoutMs / 1000
         )
-        let attempt = ConnectAttempt(call: call, ssid: ssid, generation: generation, lifecycle: lifecycle)
+        let attempt = ConnectAttempt(call: call, ssid: ssid, generation: generation, lifecycle: lifecycle, diagnostics: diagnostic)
         activeConnectAttempt = attempt
         lastRequestedSSID = ssid
+        lastDiagnosticTarget = ssid
         pendingApplications = pendingApplications.filter { $0.value.attempt != nil }
         pendingApplications[generation] = PendingApplication(attempt)
         logConnect(attempt, event: "request")
+        diagnostic.record(.requestStarted, stage: "request", timestamp: Date().timeIntervalSince1970 * 1000,
+                          elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
         armWatchdog(attempt)
 
         manager.apply(configuration) { [weak self] error in
@@ -208,6 +239,8 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
                     return
                 }
                 guard !self.expireIfNeeded(attempt) else { return }
+                diagnostic.record(.requestCompleted, stage: "request", timestamp: Date().timeIntervalSince1970 * 1000,
+                                  elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
                 if let error = error as NSError?,
                    !(error.domain == NEHotspotConfigurationErrorDomain &&
                      error.code == NEHotspotConfigurationError.alreadyAssociated.rawValue) {
@@ -220,6 +253,8 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
                 }
                 guard attempt.lifecycle.beginVerification(at: ProcessInfo.processInfo.systemUptime) else { return }
                 self.logConnect(attempt, event: "verification-start")
+                diagnostic.record(.ssidVerification, stage: "verification", timestamp: Date().timeIntervalSince1970 * 1000,
+                                  elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
                 self.armWatchdog(attempt)
                 self.verifyConnectedSsid(attempt)
             }
@@ -457,6 +492,84 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
         call.resolve(["version": self.pluginVersion])
     }
 
+    @objc func getConnectionDiagnostics(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let diagnostic = self.lastDiagnostics, let target = self.lastDiagnosticTarget else {
+                self.resolveDiagnostics(call)
+                return
+            }
+            let revision = diagnostic.revision
+            let lookup = DiagnosticLookup(call)
+            let watchdog = DispatchWorkItem { [weak self] in
+                guard lookup.lifecycle.finish(), let pendingCall = lookup.call else { return }
+                lookup.call = nil
+                guard let self = self else {
+                    pendingCall.reject("Plugin is unavailable.")
+                    return
+                }
+                if self.lastDiagnostics === diagnostic, diagnostic.revision == revision {
+                    diagnostic.observeSsid(.unavailable, timestamp: Date().timeIntervalSince1970 * 1000,
+                                           elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+                    diagnostic.observeIp(.unknown, timestamp: Date().timeIntervalSince1970 * 1000,
+                                         elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+                }
+                self.resolveDiagnostics(pendingCall)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: watchdog)
+            NEHotspotNetwork.fetchCurrent { [weak self] network in
+                DispatchQueue.main.async {
+                    guard lookup.lifecycle.finish(), let pendingCall = lookup.call else { return }
+                    lookup.call = nil
+                    watchdog.cancel()
+                    guard let self = self else {
+                        pendingCall.reject("Plugin is unavailable.")
+                        return
+                    }
+                    if self.lastDiagnostics === diagnostic, diagnostic.revision == revision {
+                        let expired = ProcessInfo.processInfo.systemUptime >= lookup.lifecycle.deadline
+                        let status: WifiConnectionLifecycle.Verification = expired || network == nil
+                            ? .unavailable : network?.ssid == target ? .match : .mismatch
+                        diagnostic.observeSsid(status, timestamp: Date().timeIntervalSince1970 * 1000,
+                                               elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+                        let readiness = status == .match ? WifiConnectionDiagnostics.classifyAddresses(self.readEn0Addresses()) : .unknown
+                        diagnostic.observeIp(readiness, timestamp: Date().timeIntervalSince1970 * 1000,
+                                             elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+                    }
+                    self.resolveDiagnostics(pendingCall)
+                }
+            }
+        }
+    }
+
+    private func resolveDiagnostics(_ call: CAPPluginCall) {
+        var result: JSObject = [
+            "platform": "ios", "pluginVersion": pluginVersion,
+            "capturedAt": Date().timeIntervalSince1970 * 1000,
+            "eventLimit": WifiConnectionDiagnostics.eventLimit, "droppedEventCount": 0, "events": []
+        ]
+        if let diagnostic = lastDiagnostics {
+            result.merge(diagnostic.snapshot(elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)) { _, value in value }
+        }
+        call.resolve(result)
+    }
+
+    private func readEn0Addresses() -> [String]? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        var addresses: [String] = []
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = pointer.pointee
+            guard String(cString: interface.ifa_name) == "en0", let address = interface.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET) || address.pointee.sa_family == UInt8(AF_INET6) else { continue }
+            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(address, socklen_t(address.pointee.sa_len), &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 {
+                addresses.append(String(cString: buffer))
+            }
+        }
+        return addresses
+    }
+
 
     private func resolveTimeoutMs(_ call: CAPPluginCall, option: String, defaultValue: Double) -> Double? {
         guard let raw = call.getValue(option), !(raw is NSNull) else {
@@ -503,9 +616,15 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             DispatchQueue.main.async {
                 guard let self = self, self.activeConnectAttempt === attempt, !self.expireIfNeeded(attempt) else { return }
                 let previous = attempt.lifecycle.verification
-                if attempt.lifecycle.observe(
+                let matches = attempt.lifecycle.observe(
                     ssid: network?.ssid, expected: attempt.ssid, at: ProcessInfo.processInfo.systemUptime
-                ) {
+                )
+                attempt.diagnostics.observeSsid(attempt.lifecycle.verification, timestamp: Date().timeIntervalSince1970 * 1000,
+                                                elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+                if matches {
+                    attempt.diagnostics.observeIp(WifiConnectionDiagnostics.classifyAddresses(self.readEn0Addresses()),
+                                                  timestamp: Date().timeIntervalSince1970 * 1000,
+                                                  elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
                     self.logConnect(attempt, event: "verification:match")
                     self.completeConnect(attempt)
                     return
@@ -527,7 +646,9 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
         _ attempt: ConnectAttempt, code: String? = nil, message: String = "",
         stage: String = "verification", error: NSError? = nil
     ) {
-        guard activeConnectAttempt === attempt, attempt.lifecycle.finish() else { return }
+        guard activeConnectAttempt === attempt else { return }
+        if code == nil, expireIfNeeded(attempt) { return }
+        guard attempt.lifecycle.finish() else { return }
         activeConnectAttempt = nil
         attempt.watchdog?.cancel()
         attempt.poll?.cancel()
@@ -543,6 +664,8 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
                 error: error, attempt: attempt
             )
         } else {
+            attempt.diagnostics.succeed(timestamp: Date().timeIntervalSince1970 * 1000,
+                                        elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
             call.resolve()
         }
         // Timeout/error intentionally preserves persistent configuration. Only disconnect
@@ -557,6 +680,11 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             }
         }
         hotspotManager?.removeConfiguration(forSSID: ssid)
+        if lastDiagnosticTarget == ssid {
+            lastDiagnosticTarget = nil
+            lastDiagnostics?.cleanup(timestamp: Date().timeIntervalSince1970 * 1000,
+                                     elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+        }
         if lastRequestedSSID == ssid {
             lastRequestedSSID = nil
         }
@@ -567,11 +695,13 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
               configurationOwnership.isCurrent(ssid: attempt.ssid, generation: generation) else { return }
         hotspotManager?.removeConfiguration(forSSID: attempt.ssid)
         logConnect(attempt, event: "cancelled-configuration-cleanup")
+        attempt.diagnostics.cleanup(timestamp: Date().timeIntervalSince1970 * 1000,
+                                    elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
     }
 
     private func logConnect(_ attempt: ConnectAttempt, event: String) {
         let elapsedMs = Int((ProcessInfo.processInfo.systemUptime - attempt.lifecycle.startedAt) * 1000)
-        NSLog("CapacitorWifi connect attempt=%ld elapsedMs=%ld event=%@", attempt.generation, elapsedMs, event)
+        NSLog("CapacitorWifi connect attempt=%ld elapsedMs=%ld event=%@", attempt.diagnostics.id, elapsedMs, event)
     }
 
     private func isValidWpaPassphrase(_ password: String) -> Bool {
@@ -624,6 +754,14 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
         var data = JSObject()
         data["platform"] = "ios"
         data["connectionStage"] = stage
+        let diagnostic = attempt?.diagnostics ?? (call.callbackId == diagnosticCallId ? lastDiagnostics : nil)
+        if let diagnostic = diagnostic {
+            diagnostic.fail(code: code, stage: stage, nativeCode: nativeCode,
+                            nativeDomain: (error as NSError?).map { $0.domain == NEHotspotConfigurationErrorDomain ? NEHotspotConfigurationErrorDomain : "other" },
+                            cancelled: message.hasPrefix("Connection cancelled"),
+                            timestamp: Date().timeIntervalSince1970 * 1000, elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+            data["attemptId"] = diagnostic.id
+        }
         if let attempt = attempt {
             data["elapsedMs"] = (ProcessInfo.processInfo.systemUptime - attempt.lifecycle.startedAt) * 1000
             if stage == "verification" {

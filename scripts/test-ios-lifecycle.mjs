@@ -12,6 +12,14 @@ const temporaryDirectory = mkdtempSync(join(tmpdir(), 'capacitor-wifi-ios-lifecy
 try {
   for (const [source, destination] of [
     [
+      'ios/Sources/CapacitorWifiPlugin/WifiConnectionDiagnostics.swift',
+      'Sources/CapacitorWifiPlugin/WifiConnectionDiagnostics.swift',
+    ],
+    [
+      'ios/Tests/CapacitorWifiPluginTests/WifiConnectionDiagnosticsTests.swift',
+      'Tests/CapacitorWifiPluginTests/WifiConnectionDiagnosticsTests.swift',
+    ],
+    [
       'ios/Sources/CapacitorWifiPlugin/WifiConnectionLifecycle.swift',
       'Sources/CapacitorWifiPlugin/WifiConnectionLifecycle.swift',
     ],
