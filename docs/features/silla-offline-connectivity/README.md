@@ -8,11 +8,11 @@ Make Silla's connection to an EV charger's offline Wi-Fi reliable, explainable, 
 
 Lifecycle: Implementation
 
-Current milestone: M2 iOS bounded/cancellable connection — Owner refinement; M1 review deferred to the same batch
+Current work: M1 Android and M2 iOS accepted; owner authorized continued S3 plugin diagnostics/readiness implementation
 
-Last updated: 2026-10-08
+Last updated: 2026-10-12
 
-M1 and M2 implementations await combined owner/device review under the [batched-validation exception](../README.md#silla-batched-device-validation-exception). Later slices remain proposals. No milestone has definitive acceptance or physical-device validation.
+The owner reports having tested M1 and M2 thoroughly and accepts both milestones on 2026-10-12. Per-scenario device/build records were not included in this update and remain to be captured if available. On 2026-10-12 the owner also directed continued S3 implementation, beginning with plugin-side diagnostic lifecycle accuracy and readiness observations (D-009). Commit `b818e85` supplies the initial diagnostics/API baseline; S3 integration, review, and acceptance remain outstanding.
 
 ## Owner
 
@@ -20,10 +20,10 @@ Product owner: Silla team; individual acceptance owner to be confirmed.
 
 ## Milestone Checklist
 
-- [ ] M1 Android verified offline connection: verify the requested network, require requested routing, and release owned resources safely.
-- [ ] M2 iOS bounded/cancellable connection: separate consent/verification budgets, settle once, and retain configuration until disconnect.
+- [x] M1 Android verified offline connection: verify the requested network, require requested routing, and release owned resources safely. Owner accepted 2026-10-12.
+- [x] M2 iOS bounded/cancellable connection: separate consent/verification budgets, settle once, and retain configuration until disconnect. Owner accepted 2026-10-12.
 
-Later delivery slices remain discovery proposals, not formal milestones.
+S3 implementation is authorized for the plugin-side increment described in the [plan](plan.md). Its full Silla-app integration and acceptance remain incomplete; later delivery slices remain proposals.
 
 ## Initiative and Sequencing
 
@@ -33,7 +33,7 @@ Current coordinated stage: Not applicable
 
 Next cross-feature dependency: Silla application repository and physical Android/iOS devices for integration validation.
 
-Proposed ordering: Android verification/cleanup → iOS timing/cancellation → diagnostics and readiness → permission recovery → optional iOS connection experiment. Release validation begins with the first slice. See [Plan](plan.md).
+Proposed ordering: Android verification/cleanup → iOS timing/cancellation → diagnostics and readiness → permission recovery → optional iOS connection experiment. M1/M2 are owner-accepted; the owner has authorized continued plugin-side S3 diagnostics/readiness work. See [Plan](plan.md).
 
 ## Documentation Reading Rules
 
@@ -51,6 +51,8 @@ During refinement, start with [Discovery](discovery.md). Before implementation r
 4. [Plan](plan.md)
 5. [Verification](verification.md)
 
+For hands-on S3 diagnostics checks, use the [S3 Diagnostics Validation Guide](s3-diagnostics-validation.md).
+
 Browser review is not applicable to native association/routing. Physical-device review scenarios are in verification; add a browser guide only if a later slice introduces meaningfully browser-reviewable behavior.
 
 ## Approval Gates
@@ -59,20 +61,22 @@ Browser review is not applicable to native association/routing. Physical-device 
 | --- | --- | --- | --- | --- |
 | Discovery | Approved | Silla owner | 2026-10-08 | Direction to begin the first Android slice; remaining backlog not accepted |
 | Requirements | Approved | Silla owner | 2026-10-08 | M1/M2 scope; explicit routing/offline choices and separate iOS budgets with retention until disconnect |
-| Design | Awaiting review | | | M1/M2 technical mechanisms documented for combined review |
-| Plan | Awaiting review | | | M1/M2 development authorized; phone reviews batched, broader plan/release matrix open |
-| Final acceptance | Not ready | | | Owner review, hardening, and device evidence outstanding |
+| Design | Awaiting review | | | M1/M2 accepted; S3 diagnostics implementation and remaining technical review documented |
+| Plan | Awaiting review | | | M1/M2 accepted; S3 plugin increment authorized and lifecycle-event checkpoint accepted 2026-10-12; S3 completion pending |
+| M1/M2 final acceptance | Accepted | Silla feature owner | 2026-10-12 | Owner reports thorough testing and accepts both milestones; per-scenario device/build evidence not recorded here |
+| S3 final acceptance | Not ready | | | S3 implementation, verification, owner review, and integration remain outstanding |
 
 ## Milestone Completion Rule
 
 Follow the [mandatory milestone completion sequence](../README.md#mandatory-milestone-completion-sequence). Owner implementation review begins hardening; definitive acceptance follows hardening and final owner validation.
 
-Owner exception: phone reviews may be batched across milestones and development may continue while they are outstanding. This does not accept either implementation or waive combined review/hardening/final validation.
+Owner exception: phone reviews may be batched across milestones and development may continue while they are outstanding. M1/M2 were subsequently accepted by the owner on 2026-10-12. S3 remains separate and unaccepted.
 
 ## Current Blockers
 
-- Combined Android/iPhone review requires a Silla integration build and an agreed device matrix; this is deferred evidence, not a development blocker under the exception.
+- Detailed M1/M2 device/build records were not supplied with the 2026-10-12 acceptance; capture them retrospectively if available. This does not change the owner's acceptance.
 - Full native iOS compilation/SwiftLint requires macOS/Xcode; Linux policy tests and syntax parsing do not replace it.
+- S3 plugin-side diagnostics work is implemented in the current worktree; API docs, Android tests/build, Web build, and lint pass. iOS policy tests/native build need Swift/macOS; device-level snapshot, cleanup, routing, and charger-service checks remain. Silla-side service readiness and error-preservation work requires the separate app repository.
 
 ## Pause or Cancellation Record
 

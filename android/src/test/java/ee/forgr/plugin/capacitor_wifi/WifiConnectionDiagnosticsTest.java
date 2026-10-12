@@ -76,9 +76,109 @@ public class WifiConnectionDiagnosticsTest {
     }
 
     @Test
+    public void terminalOutcomeCannotBeOverwrittenByLateCallbacks() {
+        WifiConnectionDiagnostics diagnostic = new WifiConnectionDiagnostics(2, 1000, 100, false);
+        diagnostic.fail("CONNECTION_TIMEOUT", "verification", null, false, 1100, 200);
+        diagnostic.succeed(1200, 300);
+        diagnostic.fail("CONNECTION_FAILED", "cleanup", null, false, 1300, 400);
+
+        Map<?, ?> snapshot = diagnostic.snapshot(400);
+        Map<?, ?> state = (Map<?, ?>) snapshot.get("attempt");
+        assertEquals("failed", state.get("outcome"));
+        assertEquals("CONNECTION_TIMEOUT", ((Map<?, ?>) state.get("error")).get("code"));
+        assertEquals(2, ((List<?>) snapshot.get("events")).size());
+    }
+
+    @Test
+    public void associationConfirmationIsRecordedOnlyOnceAndBeforeSuccess() {
+        WifiConnectionDiagnostics diagnostic = new WifiConnectionDiagnostics(3, 1000, 100, false);
+        diagnostic.associationConfirmed(1100, 200);
+        diagnostic.associationConfirmed(1200, 300);
+        diagnostic.succeed(1300, 400);
+
+        List<?> events = (List<?>) diagnostic.snapshot(400).get("events");
+        assertEquals(3, events.size());
+        assertEquals("associationConfirmed", ((Map<?, ?>) events.get(1)).get("type"));
+        assertEquals("connectionSucceeded", ((Map<?, ?>) events.get(2)).get("type"));
+    }
+
+    @Test
+    public void verificationStartDoesNotClaimAnSsidObservation() {
+        WifiConnectionDiagnostics diagnostic = new WifiConnectionDiagnostics(5, 1000, 100, false);
+        diagnostic.record(WifiConnectionDiagnostics.EventType.VERIFICATION_STARTED, "verification", 1100, 200);
+
+        Map<String, Object> snapshot = diagnostic.snapshot(200);
+        Map<?, ?> attempt = (Map<?, ?>) snapshot.get("attempt");
+        List<?> events = (List<?>) snapshot.get("events");
+        assertEquals("unavailable", attempt.get("ssidVerification"));
+        assertFalse(attempt.containsKey("ssidObservedAt"));
+        assertEquals("verificationStarted", ((Map<?, ?>) events.get(1)).get("type"));
+    }
+
+    @Test
+    public void routingFailuresKeepTheirDistinctStageInTheSnapshot() {
+        WifiConnectionDiagnostics diagnostic = new WifiConnectionDiagnostics(4, 1000, 100, true);
+        diagnostic.binding(false, 1100, 200);
+        diagnostic.fail("CONNECTION_FAILED", "routing", null, false, 1200, 300);
+
+        Map<?, ?> attempt = (Map<?, ?>) diagnostic.snapshot(300).get("attempt");
+        Map<?, ?> error = (Map<?, ?>) attempt.get("error");
+        assertEquals("failed", attempt.get("outcome"));
+        assertEquals("routing", attempt.get("stage"));
+        assertEquals("routing", error.get("stage"));
+        assertEquals("failed", attempt.get("routing"));
+    }
+
+    @Test
+    public void timeoutAndPermissionFailuresHaveDistinctTerminalEventTypes() {
+        WifiConnectionDiagnostics timeout = new WifiConnectionDiagnostics(6, 1000, 100, false);
+        timeout.fail("CONNECTION_TIMEOUT", "verification", null, false, 1100, 200);
+        List<?> timeoutEvents = (List<?>) timeout.snapshot(200).get("events");
+        assertEquals("connectionTimedOut", ((Map<?, ?>) timeoutEvents.get(1)).get("type"));
+
+        WifiConnectionDiagnostics permission = new WifiConnectionDiagnostics(7, 1000, 100, false);
+        permission.fail("PERMISSION_DENIED", "permission", null, false, 1100, 200);
+        List<?> permissionEvents = (List<?>) permission.snapshot(200).get("events");
+        assertEquals("permissionDenied", ((Map<?, ?>) permissionEvents.get(1)).get("type"));
+    }
+
+    @Test
+    public void validationFailureCanBeSnapshottedBeforeNativeRequestStarts() {
+        WifiConnectionDiagnostics diagnostic = new WifiConnectionDiagnostics(8, 1000, 100, false);
+        diagnostic.fail("INVALID_CONFIGURATION", "validation", null, false, 1010, 110);
+
+        Map<String, Object> snapshot = diagnostic.snapshot(120);
+        Map<?, ?> attempt = (Map<?, ?>) snapshot.get("attempt");
+        List<?> events = (List<?>) snapshot.get("events");
+        assertEquals(8L, attempt.get("id"));
+        assertEquals("failed", attempt.get("outcome"));
+        assertEquals("validation", attempt.get("stage"));
+        assertEquals("connectionFailed", ((Map<?, ?>) events.get(1)).get("type"));
+    }
+
+    @Test
+    public void cancelledFailureHasItsOwnTerminalEventType() {
+        WifiConnectionDiagnostics diagnostic = new WifiConnectionDiagnostics(9, 1000, 100, false);
+        diagnostic.fail("CONNECTION_FAILED", "association", null, true, 1100, 200);
+        List<?> events = (List<?>) diagnostic.snapshot(200).get("events");
+        Map<?, ?> attempt = (Map<?, ?>) diagnostic.snapshot(200).get("attempt");
+        assertEquals("cancelled", attempt.get("outcome"));
+        assertEquals("connectionCancelled", ((Map<?, ?>) events.get(1)).get("type"));
+    }
+
+    @Test
     public void emptyAndUnavailableMetadataAreDifferent() {
         assertEquals("unknown", WifiConnectionDiagnostics.classifyAddresses(null));
         assertEquals("missing", WifiConnectionDiagnostics.classifyAddresses(new ArrayList<>()));
+    }
+
+    @Test
+    public void unobservedTargetIsMarkedUnknownWithObservationTime() {
+        WifiConnectionDiagnostics diagnostic = new WifiConnectionDiagnostics(10, 1000, 100, false);
+        diagnostic.observeIp("unknown", 1100, 200);
+        Map<?, ?> attempt = (Map<?, ?>) diagnostic.snapshot(200).get("attempt");
+        assertEquals("unknown", attempt.get("ipReadiness"));
+        assertEquals(1100L, attempt.get("ipObservedAt"));
     }
 
     @Test

@@ -15,12 +15,16 @@ final class WifiConnectionDiagnostics {
         case requestStarted
         case requestCompleted
         case networkAvailable
+        case associationConfirmed
+        case verificationStarted
         case capabilitiesChanged
         case ssidVerification
         case bindingResult
         case ipReadiness
         case connectionSucceeded
         case connectionFailed
+        case connectionTimedOut
+        case permissionDenied
         case connectionCancelled
         case networkLost
         case cleanup
@@ -47,6 +51,7 @@ final class WifiConnectionDiagnostics {
     private var ipObservedAt: Double?
     private var ssidObservedAt: Double?
     private var error: [String: Any]?
+    private var associationConfirmed = false
     private var events: [[String: Any]] = []
 
     init(id: Int, timestamp: Double, elapsedClock: Double) {
@@ -99,19 +104,36 @@ final class WifiConnectionDiagnostics {
     }
 
     func succeed(timestamp: Double, elapsedClock: Double) {
+        guard outcome == "pending" else { return }
         outcome = "connected"
         record(.connectionSucceeded, stage: "connected", timestamp: timestamp, elapsedClock: elapsedClock)
     }
 
+    func associationConfirmed(timestamp: Double, elapsedClock: Double) {
+        guard !associationConfirmed, outcome == "pending" else { return }
+        associationConfirmed = true
+        record(.associationConfirmed, stage: "association", timestamp: timestamp, elapsedClock: elapsedClock)
+    }
+
     func fail(code: String, stage: String, nativeCode: Int?, nativeDomain: String?, cancelled: Bool,
               timestamp: Double, elapsedClock: Double) {
+        guard outcome == "pending" else { return }
         outcome = cancelled ? "cancelled" : "failed"
         var details: [String: Any] = ["code": code, "stage": stage]
         if let nativeCode = nativeCode { details["nativeCode"] = String(nativeCode) }
         if let nativeDomain = nativeDomain { details["nativeDomain"] = nativeDomain }
         error = details
-        record(cancelled ? .connectionCancelled : .connectionFailed, stage: stage,
-               timestamp: timestamp, elapsedClock: elapsedClock)
+        let event: EventType
+        if cancelled {
+            event = .connectionCancelled
+        } else if code == "CONNECTION_TIMEOUT" {
+            event = .connectionTimedOut
+        } else if code == "PERMISSION_DENIED" {
+            event = .permissionDenied
+        } else {
+            event = .connectionFailed
+        }
+        record(event, stage: stage, timestamp: timestamp, elapsedClock: elapsedClock)
     }
 
     func cleanup(timestamp: Double, elapsedClock: Double) {
@@ -121,7 +143,14 @@ final class WifiConnectionDiagnostics {
     }
 
     func snapshot(elapsedClock: Double) -> [String: Any] {
-        ["attempt": state(elapsedClock: elapsedClock), "events": events,
+        let copiedEvents = events.map { event -> [String: Any] in
+            var copy = event
+            if let error = event["error"] as? [String: Any] {
+                copy["error"] = error
+            }
+            return copy
+        }
+        return ["attempt": state(elapsedClock: elapsedClock), "events": copiedEvents,
          "droppedEventCount": max(0, sequence - events.count)]
     }
 

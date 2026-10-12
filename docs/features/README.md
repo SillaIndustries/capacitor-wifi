@@ -16,7 +16,7 @@ Every plugin API contract change must include an update to the API documentation
 
 | Feature | Status | First proposed delivery slice |
 | --- | --- | --- |
-| [Silla offline charger connectivity](silla-offline-connectivity/README.md) | Implementation — M1/M2 awaiting batched review | Android verification/cleanup and iOS bounded cancellation |
+| [Silla offline charger connectivity](silla-offline-connectivity/README.md) | Implementation — M1/M2 accepted; authorized S3 plugin work in progress | S3 diagnostics/readiness and Silla application integration |
 
 The supplied [_template](_template/README.md) is the dossier structure. This index supplies the shared process sections referenced by that template; feature-specific proposals remain subject to owner review.
 

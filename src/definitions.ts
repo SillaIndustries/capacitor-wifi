@@ -657,6 +657,7 @@ export interface WifiConnectionErrorData {
 
   /**
    * Stage of the connection flow where the failure occurred
+   * (`routing` is reported when Android cannot establish requested app routing).
    *
    * @since 8.5.0
    */
@@ -667,7 +668,8 @@ export interface WifiConnectionErrorData {
     | 'association'
     | 'authentication'
     | 'ipProvisioning'
-    | 'verification';
+    | 'verification'
+    | 'routing';
 }
 
 /** Last observed connection phase; reporting does not change connect() success semantics. */
@@ -750,19 +752,28 @@ export interface WifiDiagnosticEvent extends WifiDiagnosticState {
   sequence: number;
   /** Unix epoch milliseconds. Use sequence/elapsedMs for ordering if the wall clock changes. */
   timestamp: number;
-  /** Native lifecycle observation or completion. Not all types are available on every platform. */
+  /**
+   * Native lifecycle observation or completion. Not all types are available on every platform.
+   * `verificationStarted` marks the start of SSID checking; it is not an SSID observation.
+   * `associationConfirmed` is emitted only after the requested SSID is observed.
+   * `connectionTimedOut` and `permissionDenied` distinguish those terminal failure classes.
+   */
   type:
     | 'attemptStarted'
     | 'permissionRequested'
     | 'requestStarted'
     | 'requestCompleted'
     | 'networkAvailable'
+    | 'associationConfirmed'
+    | 'verificationStarted'
     | 'capabilitiesChanged'
     | 'ssidVerification'
     | 'bindingResult'
     | 'ipReadiness'
     | 'connectionSucceeded'
     | 'connectionFailed'
+    | 'connectionTimedOut'
+    | 'permissionDenied'
     | 'connectionCancelled'
     | 'networkLost'
     | 'cleanup';

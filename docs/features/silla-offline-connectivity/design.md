@@ -1,6 +1,6 @@
 # Design
 
-Status: M1/M2 implemented for batched owner review; later architecture remains proposed. Device behavior and full native iOS compilation are unverified.
+Status: M1/M2 accepted by the owner on 2026-10-12; plugin-side S3 diagnostics/readiness implementation is authorized and in progress, based on commit `b818e85`. Remaining S3 architecture and Silla-app integration are incomplete. S3 device behavior and full native iOS compilation are unverified.
 
 ## Design Summary and Current System
 
@@ -33,7 +33,7 @@ Modern Android checks precise location permission and location services before t
 
 Owner-approved contract: all modern requests remove the internet capability requirement; routing remains optional, and requested binding failure rejects with CONNECTION_FAILED. Android timeout still includes Wi-Fi consent time, but begins after location authorization. Success means SSID association plus requested binding, not charger-service readiness.
 
-Initial diagnostics are native log events without SSIDs/passwords, and optional error fields `ssidVerification`, `bindingSucceeded`, and `elapsedMs`. No support snapshot/event API or persistent diagnostic buffer is introduced in M1.
+M1 initially added native log events without SSIDs/passwords, and optional error fields `ssidVerification`, `bindingSucceeded`, and `elapsedMs`. A later partial S3 implementation adds the support snapshot API described below; that API is not part of M1's original scope.
 
 ### M2 implementation boundaries
 
@@ -49,13 +49,21 @@ Persistent configuration (`joinOnce = false`) is retained on error/timeout; no r
 
 The existing SPM source target and CocoaPods source glob include the new policy file without integration changes. XCTest policy tests also run in an isolated temporary Swift package on Linux via `bun run test:ios:lifecycle`; this does not compile the Capacitor/NetworkExtension adapter.
 
+### S3 diagnostics/readiness implementation progress
+
+Commit `b818e85` adds `WifiConnectionDiagnostics` on Android and iOS and exposes `getConnectionDiagnostics()` through the plugin API. The latest attempt is held in memory with at most 64 events; snapshots include attempt ID, lifecycle stage/outcome, timestamps/elapsed time, SSID verification state, routing state where applicable, IP readiness, and selected structured error metadata. Earlier events are counted when evicted. Reports intentionally omit network identifiers, actual addresses, credentials, and raw native messages. Web reports the native-only method as unimplemented.
+
+Android samples link addresses from the requested `Network`'s `LinkProperties`; iOS refreshes the current SSID and interface addresses under a bounded lookup and attributes IP state only when the SSID matches the tracked target. These are observations, not proof of end-to-end routing or charger-service readiness. Silla must still probe its local services.
+
+The implementation includes Android and Foundation-only iOS tests for event bounds, snapshot-copy behavior, privacy, IP classification, terminal outcomes, event ordering, routing-stage reporting, and timeout/permission event mapping. On 2026-10-12, Android debug/release builds and JUnit tests, Web build/docgen, repository lint, and root README API regeneration passed. The portable iOS policy test runner could not run because Swift is unavailable in this environment. iOS native adapter type-check/build, S3 device validation, cleanup semantics, and Silla integration remain outstanding. The Android timeout maximum was also tightened to 600,000 ms and needs explicit compatibility review.
+
 | Requirements | Design element |
 | --- | --- |
 | FR-001–FR-004 | Requested-network callbacks, observation states, identity-safe fallback, retained successful request |
 | FR-005–FR-008 | Owned cleanup, checked binding, independent offline capability policy |
 | FR-009–FR-011 | iOS bounded lifecycle, late-callback invalidation, configuration policy |
-| FR-012–FR-014 | Explicit milestones and app-owned service readiness |
-| FR-015–FR-017 | Structured events, stage-specific errors, bounded snapshot |
+| FR-012–FR-014 | Partial observations only; complete milestone contract and app-owned service readiness remain |
+| FR-015–FR-017 | Native attempt events/snapshot, IP observations, timeout/permission distinction, and bounded history implemented in part; iOS tests/build, device evidence, and remaining hardening outstanding |
 | FR-018–FR-020 | Platform authorization context and app permission recovery |
 | FR-021 | Optional temporary-configuration experiment |
 | FR-022–FR-024 | External Silla error/readiness/cleanup integration |
@@ -63,7 +71,7 @@ The existing SPM source target and CocoaPods source glob include the new policy 
 
 ## Interfaces and Contracts
 
-Preserve `connect(): Promise<void>`, stable error codes, and existing persistent/route defaults. M1 changes requested binding failure to rejection and removes the modern internet requirement. M2 adds iOS-only requestTimeoutMs, makes iOS timeoutMs a post-apply verification budget, and validates iOS budgets at a maximum of ten minutes. The owner explicitly selected separate waiting periods and retention until disconnect. Error fields are additive. Broader observation APIs, authorization APIs, and `joinOnce` remain proposals.
+Preserve `connect(): Promise<void>`, stable error codes, and existing persistent/route defaults. M1 changes requested binding failure to rejection and removes the modern internet requirement. M2 adds iOS-only requestTimeoutMs, makes iOS timeoutMs a post-apply verification budget, and validates iOS budgets at a maximum of ten minutes. The owner explicitly selected separate waiting periods and retention until disconnect. Error fields are additive. The partial diagnostics API, timeout/permission event codes, Android routing stage, and generated README docs are implemented in the current worktree; earlier `b818e85` contains the initial snapshot API baseline. Broader authorization APIs and `joinOnce` remain proposals. Android's new 600,000 ms timeout ceiling still needs compatibility review.
 
 QR-005 applies to every API contract change, including behavior-only fixes. Update `src/definitions.ts` types/JSDoc and regenerate the root README API sections with `bun run docgen` or `bun run build` in the same change. Review relevant handwritten guidance/examples too. Generated sections must never be edited manually.
 
@@ -73,7 +81,7 @@ Silla translates structured stages into association, permission, DHCP, routing, 
 
 ## Security, Privacy, Accessibility, and Internationalization
 
-Never capture credentials. Decide whether SSIDs are omitted, masked, or explicitly collected for support; bound diagnostic retention. Keep codes machine-readable and native messages diagnostic-only. Plugin changes have no direct UI; Silla owns accessible, localized recovery content.
+Never capture credentials. The partial diagnostics API omits SSIDs, BSSIDs, actual IP addresses, credentials, and raw native messages and bounds retained history to 64 events. Review these privacy and retention properties against the implementation during S3 hardening. Keep codes machine-readable and native messages diagnostic-only. Plugin changes have no direct UI; Silla owns accessible, localized recovery content.
 
 ## Alternatives Considered
 
@@ -92,4 +100,4 @@ Ship immutable internal versions against a validated baseline with rollback refe
 
 ## Open Questions and Design Review
 
-M1/M2 product choices are approved; technical design awaits combined owner review. Device matrix and native iOS build evidence are outstanding. Broader identifier collection requires a later decision.
+M1/M2 are owner-accepted. Technical design review for the partial S3 diagnostics work remains outstanding; native iOS build evidence and S3 device validation are also outstanding. Broader identifier collection requires a later decision.

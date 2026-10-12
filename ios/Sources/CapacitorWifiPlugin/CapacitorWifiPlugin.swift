@@ -253,7 +253,7 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
                 }
                 guard attempt.lifecycle.beginVerification(at: ProcessInfo.processInfo.systemUptime) else { return }
                 self.logConnect(attempt, event: "verification-start")
-                diagnostic.record(.ssidVerification, stage: "verification", timestamp: Date().timeIntervalSince1970 * 1000,
+                diagnostic.record(.verificationStarted, stage: "verification", timestamp: Date().timeIntervalSince1970 * 1000,
                                   elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
                 self.armWatchdog(attempt)
                 self.verifyConnectedSsid(attempt)
@@ -622,6 +622,8 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
                 attempt.diagnostics.observeSsid(attempt.lifecycle.verification, timestamp: Date().timeIntervalSince1970 * 1000,
                                                 elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
                 if matches {
+                    attempt.diagnostics.associationConfirmed(timestamp: Date().timeIntervalSince1970 * 1000,
+                                                             elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
                     attempt.diagnostics.observeIp(WifiConnectionDiagnostics.classifyAddresses(self.readEn0Addresses()),
                                                   timestamp: Date().timeIntervalSince1970 * 1000,
                                                   elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)

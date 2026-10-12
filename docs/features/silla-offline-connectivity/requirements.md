@@ -1,6 +1,6 @@
 # Requirements
 
-Status: M1/M2 scope authorized for implementation. Device acceptance criteria remain unverified and reviews are batched by owner exception; requirements outside these milestones remain proposed. No milestone is accepted.
+Status: M1/M2 were accepted by the owner on 2026-10-12 after the owner reports thorough testing. Per-scenario device evidence is not recorded in this dossier. S3 work remains partial and unaccepted; requirements outside M1/M2 remain proposed.
 
 ## Scope and User Workflows
 
@@ -8,7 +8,7 @@ Connect to offline charger Wi-Fi, establish local communication, recover from fa
 
 ## Functional Requirements
 
-Every row states an observable requirement and its acceptance criterion. M1 covers FR-001–FR-008; M2 covers FR-009–FR-011. Both include initial FR-015–FR-016 diagnostics and applicable QR-001–QR-005. Broader diagnostic exports, complete release controls, additional iOS changes, and Silla changes remain future scope.
+Every row states an observable requirement and its acceptance criterion. M1 covers FR-001–FR-008; M2 covers FR-009–FR-011. Both include initial FR-015–FR-016 diagnostics and applicable QR-001–QR-005. Commit `b818e85` begins partial S3 plugin diagnostics/readiness work for FR-013 and FR-015–FR-017. On 2026-10-12 the owner authorized continuing this plugin-side implementation increment; verification and acceptance remain pending. Broader S3 diagnostic/service integration, complete release controls, additional iOS changes, and remaining Silla-app deliverables are incomplete or future scope.
 
 | ID | Priority | Requirement | Acceptance criterion | Owner |
 | --- | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ All attempts require bounded plugin outcomes, single settlement, explicit owners
 
 ## Dependencies and Open Questions
 
-Physical devices, supported-version matrix, Silla integration repository, signed iOS entitlements, and owner acceptance are required. M1 routing/offline choices and M2 separate budgets/retention were explicitly approved on 2026-10-08. Android retains its 30-second request/consent budget after location authorization. iOS uses the separate budgets in FR-009; Apple can finish applying after plugin timeout/cancellation, and a retry can receive native pending. Plugin cancellation does not dismiss the OS prompt. Background suspension can delay watchdog delivery. Temporary iOS configuration remains experimental.
+Physical devices, supported-version matrix, Silla integration repository, and signed iOS entitlements are required for further validation. M1 and M2 were accepted by the owner on 2026-10-12 after reported thorough testing; per-device evidence is not recorded here. M1 routing/offline choices and M2 separate budgets/retention were explicitly approved on 2026-10-08. Android retains its 30-second request/consent budget after location authorization. iOS uses the separate budgets in FR-009; Apple can finish applying after plugin timeout/cancellation, and a retry can receive native pending. Plugin cancellation does not dismiss the OS prompt. Background suspension can delay watchdog delivery. Temporary iOS configuration remains experimental.
 
 ## Requirements Review Checklist
 

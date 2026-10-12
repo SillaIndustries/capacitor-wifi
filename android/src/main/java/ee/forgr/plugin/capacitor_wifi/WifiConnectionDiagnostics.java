@@ -19,12 +19,16 @@ final class WifiConnectionDiagnostics {
         REQUEST_STARTED("requestStarted"),
         REQUEST_COMPLETED("requestCompleted"),
         NETWORK_AVAILABLE("networkAvailable"),
+        ASSOCIATION_CONFIRMED("associationConfirmed"),
+        VERIFICATION_STARTED("verificationStarted"),
         CAPABILITIES_CHANGED("capabilitiesChanged"),
         SSID_VERIFICATION("ssidVerification"),
         BINDING_RESULT("bindingResult"),
         IP_READINESS("ipReadiness"),
         CONNECTION_SUCCEEDED("connectionSucceeded"),
         CONNECTION_FAILED("connectionFailed"),
+        CONNECTION_TIMED_OUT("connectionTimedOut"),
+        PERMISSION_DENIED("permissionDenied"),
         CONNECTION_CANCELLED("connectionCancelled"),
         NETWORK_LOST("networkLost"),
         CLEANUP("cleanup");
@@ -50,6 +54,7 @@ final class WifiConnectionDiagnostics {
     private Long ssidObservedAt;
     private Boolean cleanupSucceeded;
     private Map<String, Object> error;
+    private boolean associationConfirmed;
     private final List<Map<String, Object>> events = new ArrayList<>();
 
     WifiConnectionDiagnostics(long id, long timestamp, long elapsedClock, boolean autoRouteTraffic) {
@@ -103,12 +108,26 @@ final class WifiConnectionDiagnostics {
         record(EventType.BINDING_RESULT, "routing", timestamp, elapsedClock);
     }
 
+    void associationConfirmed(long timestamp, long elapsedClock) {
+        if (associationConfirmed || !isPending()) {
+            return;
+        }
+        associationConfirmed = true;
+        record(EventType.ASSOCIATION_CONFIRMED, "association", timestamp, elapsedClock);
+    }
+
     void succeed(long timestamp, long elapsedClock) {
+        if (!isPending()) {
+            return;
+        }
         outcome = "connected";
         record(EventType.CONNECTION_SUCCEEDED, "connected", timestamp, elapsedClock);
     }
 
     void fail(String code, String failureStage, Integer nativeCode, boolean cancelled, long timestamp, long elapsedClock) {
+        if (!isPending()) {
+            return;
+        }
         outcome = cancelled ? "cancelled" : "failed";
         error = new LinkedHashMap<>();
         error.put("code", code);
@@ -116,7 +135,14 @@ final class WifiConnectionDiagnostics {
         if (nativeCode != null) {
             error.put("nativeCode", nativeCode.toString());
         }
-        record(cancelled ? EventType.CONNECTION_CANCELLED : EventType.CONNECTION_FAILED, failureStage, timestamp, elapsedClock);
+        EventType eventType = cancelled
+            ? EventType.CONNECTION_CANCELLED
+            : code.equals("CONNECTION_TIMEOUT")
+                ? EventType.CONNECTION_TIMED_OUT
+                : code.equals("PERMISSION_DENIED")
+                    ? EventType.PERMISSION_DENIED
+                    : EventType.CONNECTION_FAILED;
+        record(eventType, failureStage, timestamp, elapsedClock);
     }
 
     void cleanup(boolean succeeded, long timestamp, long elapsedClock) {

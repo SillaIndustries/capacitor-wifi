@@ -1183,13 +1183,13 @@ public class CapacitorWifiPlugin extends Plugin {
         activeConnectCall = call;
         connectionState = new WifiConnectionState<>(ssid, SystemClock.elapsedRealtime() + timeoutMs);
         pendingAutoRouteTraffic = autoRouteTraffic;
-        connectionStage = "association";
+        connectionStage = "request";
         ssidVerification = WifiConnectionState.Verification.UNAVAILABLE;
         bindingSucceeded = null;
         connectStartedAt = SystemClock.elapsedRealtime();
         attemptedCallId = call.getCallbackId();
         logConnect("request");
-        recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.REQUEST_STARTED, "association");
+        recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.REQUEST_STARTED, "request");
 
         connectTimeoutRunnable = () ->
             completeConnectFailure(
@@ -1230,7 +1230,17 @@ public class CapacitorWifiPlugin extends Plugin {
     }
 
     private void startSsidVerification(int generation, @Nullable Network network, String expectedSsid, boolean keepCallbackOnSuccess) {
-        connectionStage = "verification";
+        // The legacy reconnect path is still waiting for association; modern specifier
+        // requests have already received the requested Network and are checking its identity.
+        connectionStage = network == null ? "association" : "verification";
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.record(
+                WifiConnectionDiagnostics.EventType.VERIFICATION_STARTED,
+                connectionStage,
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
+        }
         clearSsidVerification();
         ssidVerifyRunnable = new Runnable() {
             @Override
@@ -1284,7 +1294,14 @@ public class CapacitorWifiPlugin extends Plugin {
                 SystemClock.elapsedRealtime()
             );
         }
-        return ssidVerification == WifiConnectionState.Verification.MATCH;
+        boolean matched = ssidVerification == WifiConnectionState.Verification.MATCH;
+        if (matched && nativeDiagnostics != null) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_AVAILABLE, "association");
+            }
+            nativeDiagnostics.associationConfirmed(System.currentTimeMillis(), SystemClock.elapsedRealtime());
+        }
+        return matched;
     }
 
     @Nullable
@@ -1387,7 +1404,7 @@ public class CapacitorWifiPlugin extends Plugin {
                         generation,
                         "CONNECTION_FAILED",
                         "Cannot identify a Wi-Fi network for app routing.",
-                        "verification",
+                        "routing",
                         null,
                         null,
                         true
@@ -1478,9 +1495,10 @@ public class CapacitorWifiPlugin extends Plugin {
                 if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation) || !connectionState.onAvailable(network)) {
                     return;
                 }
-                connectionStage = "verification";
+                connectionStage = "association";
                 logConnect("available");
-                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_AVAILABLE, "verification");
+                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.REQUEST_COMPLETED, "request");
+                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_AVAILABLE, "association");
                 if (Boolean.TRUE.equals(pendingAutoRouteTraffic) && !bindConnectNetwork(generation, network)) {
                     return;
                 }
@@ -1596,7 +1614,7 @@ public class CapacitorWifiPlugin extends Plugin {
             generation,
             "CONNECTION_FAILED",
             "Failed to route app traffic through the requested Wi-Fi network.",
-            "verification",
+            "routing",
             null,
             null,
             true
@@ -1701,10 +1719,14 @@ public class CapacitorWifiPlugin extends Plugin {
             return;
         }
         try {
-            if (
-                network == null && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && connectionState.expectedSsid().equals(getLegacySsid())
-            ) {
-                network = getOnlyWifiNetwork();
+            if (network == null) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && connectionState.expectedSsid().equals(getLegacySsid())) {
+                    network = getOnlyWifiNetwork();
+                }
+                if (network == null) {
+                    diagnostic.observeIp("unknown", System.currentTimeMillis(), SystemClock.elapsedRealtime());
+                    return;
+                }
             }
             observeLinkProperties(diagnostic, network == null ? null : connectivityManager.getLinkProperties(network));
         } catch (Exception e) {

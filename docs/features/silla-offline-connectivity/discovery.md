@@ -57,7 +57,7 @@ Excluded: claiming a reproduced iOS offline-switch fix, forcing removal of user-
 | ID | Question | Owner | Blocking | Resolution |
 | --- | --- | --- | --- | --- |
 | Q-001 | Which Android/iOS versions and devices are release-required? | Silla | Yes, release acceptance | Pending |
-| Q-002 | Who provides final acceptance and physical-device runs? | Silla | Yes, acceptance | Pending |
+| Q-002 | Who provides final acceptance and physical-device runs? | Silla | Yes, acceptance | M1/M2 accepted by the Silla feature owner on 2026-10-12; per-device evidence not recorded here. Confirm acceptance ownership/evidence requirements for later slices. |
 | Q-003 | Does the affected iPhone never associate, leave the AP later, or stay associated with failed traffic? | Silla/device investigator | Yes, causal iOS fix | Capture a timestamped trace |
 
 ## Discovery Review Checklist

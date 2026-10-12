@@ -8,20 +8,26 @@ Combine meaningful native lifecycle automation, compilation/static checks, and p
 
 | Requirements | Automated evidence planned | Manual scenarios | Status |
 | --- | --- | --- | --- |
-| FR-001–FR-004 | Observation/identity guards and API compatibility | V-001, V-002, V-003 | Not verified |
-| FR-005–FR-008 | Ownership, stale callbacks, routing-result tests | V-001, V-004, V-005 | Not verified |
-| FR-009–FR-011 | Deadline/single-settlement/cancellation tests | V-006, V-007 | Not verified |
-| FR-012–FR-014 | Readiness classification and app error propagation | V-001, V-008 | Not verified |
-| FR-015–FR-017 | Event stages, correlation, snapshot bounds | V-009 | Not verified |
+| FR-001–FR-004 | Observation/identity guards and API compatibility | V-001, V-002, V-003 | Owner accepted M1 on 2026-10-12; details not recorded here |
+| FR-005–FR-008 | Ownership, stale callbacks, routing-result tests | V-001, V-004, V-005 | Owner accepted M1 on 2026-10-12; details not recorded here |
+| FR-009–FR-011 | Deadline/single-settlement/cancellation tests | V-006, V-007 | Owner accepted M2 on 2026-10-12; details not recorded here |
+| FR-012–FR-014 | Readiness classification and app error propagation | V-001, V-008 | Partially implemented; IP classification build-checked, Silla service and device readiness checks outstanding |
+| FR-015–FR-017 | Event stages, correlation, snapshot bounds | V-009 | Android diagnostics/build, API/docs, Web build, lint pass 2026-10-12; iOS policy tests, native/device coverage, and full S3 acceptance remain outstanding |
 | FR-018–FR-020 | Authorization mapping where testable | V-003, V-010 | Not verified |
 | FR-021 | Option/default compatibility if adopted | V-011 | Not verified |
 | FR-022–FR-024 | App metadata and target-identity tests | V-008, V-009, V-010 | Not verified |
 | FR-025, QR-001–QR-004 | Build/package/release checks; lifecycle and privacy tests | V-001–V-012 | Not verified |
-| QR-005 | `bun run docgen` or `bun run build`; review generated root README diff | Compare API documentation with each changed contract and its device evidence | Not verified |
+| QR-005 | `bun run docgen` or `bun run build`; review generated root README diff | Compare API documentation with each changed contract and its device evidence | M1/M2 API docs accepted; S3 API docs regenerated and build passed 2026-10-12 |
 
-M1 automated evidence: Android debug/release compilation and 14 new JUnit tests passed on 2026-10-08. These test network identity, redaction/fallback policy, terminal state, and binding ownership/retry. They do not simulate Android callback delivery, permission prompts, timer scheduling, or actual traffic. Device criteria remain Not verified until runs are recorded.
+M1 automated evidence: Android debug/release compilation and 14 new JUnit tests passed on 2026-10-08. These test network identity, redaction/fallback policy, terminal state, and binding ownership/retry. They do not simulate Android callback delivery, permission prompts, timer scheduling, or actual traffic. The owner reports thorough M1 testing and accepted the milestone on 2026-10-12; specific device runs are not detailed in this dossier.
 
-M2 automated evidence, 2026-10-08: 12 Foundation-only XCTest cases passed using Swift 6.0.3 on Linux, covering separate deadlines, late callbacks after terminal completion, missing-observation timeout policy, finite timeout limits, and per-SSID cleanup ownership. Swift frontend syntax parsing of the changed adapter/policy/tests passed. These checks do not type-check Capacitor/NetworkExtension integration, execute Dispatch watchdogs against Apple APIs, or prove signed-device behavior. Full iOS build remains outstanding.
+M2 automated evidence, 2026-10-08: 12 Foundation-only XCTest cases passed using Swift 6.0.3 on Linux, covering separate deadlines, late callbacks after terminal completion, missing-observation timeout policy, finite timeout limits, and per-SSID cleanup ownership. Swift frontend syntax parsing of the changed adapter/policy/tests passed. These checks do not type-check Capacitor/NetworkExtension integration or execute Dispatch watchdogs against Apple APIs. The owner reports thorough M2 testing and accepted the milestone on 2026-10-12; specific device/build runs are not detailed in this dossier.
+
+S3 implementation present in commit `b818e85` (2026-10-11), with owner-approved lifecycle-event refinements (D-010) and further plugin implementation on 2026-10-12: Android and Foundation-only iOS diagnostics classes/tests, native snapshot methods, IP readiness classification, `getConnectionDiagnostics()` API types, and unsupported Web method. Refinements add distinct association-confirmed and verification-started events, align Android routing failures with the public `connectionStage` type, distinguish timeout and permission-denied terminal events, protect outcomes from late duplicate completion, correct legacy Android request/availability event timing, preserve unknown IP state before an attributable sample, and defensively copy iOS snapshot events/errors. Android tests/build, Web build, lint, and API documentation regeneration passed on 2026-10-12. New Android diagnostics tests passed; new iOS policy tests were added but not run because Swift is unavailable. Native iOS build and remaining S3 device/app flows remain outstanding.
+
+Source review confirms native adapters reserve the diagnostics attempt before validation/permission checks. iOS returns cached diagnostics when no network target is tracked; target refresh uses a watchdog and attempt/revision guards. The iOS diagnostics model returns defensive copies of event history and nested error metadata, with mutation-isolation XCTest coverage. The latest XCTest additions could not be run because Swift is unavailable, and adapter call-site behavior still requires device evidence.
+
+Source review confirms native adapters reserve the latest diagnostics attempt before validation/permission checks, and the iOS snapshot returns cached state without requiring a tracked network target. Target refresh has a five-second watchdog and revision/current-attempt guards that suppress stale mutation. The iOS diagnostics model now returns defensive copies of event history and nested error dictionaries; tests exercise snapshot mutation isolation but remain unexecuted in this Linux environment. Adapter call-site behavior still requires device evidence.
 
 ## Automated Checks
 
@@ -34,6 +40,11 @@ M2 automated evidence, 2026-10-08: 12 Foundation-only XCTest cases passed using 
 | API documentation/build | `bun run docgen`, `bun run build` | TypeScript, docgen, bundles | 2026-10-08: root README regenerated; Web verification runs build |
 | iOS lifecycle policy | `bun run test:ios:lifecycle` | Actual Foundation policy/ownership source and XCTest cases in an isolated temporary package | 2026-10-08 M2: 12 tests passed; temporary package removed after execution |
 | Swift syntax | `swiftc -frontend -parse ios/Sources/CapacitorWifiPlugin/CapacitorWifiPlugin.swift ios/Sources/CapacitorWifiPlugin/WifiConnectionLifecycle.swift ios/Tests/CapacitorWifiPluginTests/WifiConnectionLifecycleTests.swift` | Swift syntax only, not Apple API type checking | 2026-10-08 M2: passed |
+| Android diagnostics tests | `bun run verify:android` | Android debug/release compilation and JUnit tests, including `WifiConnectionDiagnosticsTest` | 2026-10-12: passed after lifecycle, routing, timeout/permission, legacy timing, defensive model, and IP classification refinements with Java 21 and SDK; lint completed with baseline findings only |
+| iOS diagnostics/lifecycle policy | `bun run test:ios:lifecycle` | Foundation-only diagnostics and lifecycle policy XCTest cases in temporary package | 2026-10-12: blocked; `swift` is unavailable on PATH in this Linux environment; newly added iOS tests, including snapshot mutation isolation, are not executed here |
+| S3 API documentation/build | `bun run build` | Generated README API method/types, TypeScript, and Rollup bundles | 2026-10-12: passed; README regenerated with diagnostics event types and routing failure-stage type |
+| Repository lint | `bun run lint` | ESLint, Prettier, SwiftLint wrapper | 2026-10-12: passed after current increment; six existing Web unused-parameter warnings; SwiftLint skipped on Linux |
+| Web verification | `bun run verify:web` | TypeScript, generated docs, Rollup | 2026-10-12: passed after current increment |
 
 Temporary Bun, Java 21, and Android SDK installations under `/tmp/opencode` enabled validation without changing system configuration. Android test reports contain nine `WifiConnectionStateTest` and five `WifiProcessBindingTest` cases per debug/release variant, plus the existing template example test. Android lint's existing MissingPermission findings concern scanning and saved-network queries; other existing warnings concern older APIs/dependencies. The new callback API-level lint finding encountered during development was corrected with a guarded callback class annotation.
 
@@ -43,7 +54,7 @@ M2 uses a temporary Swift installation and compatible runtime libraries under `/
 
 ## Manual Scenarios
 
-All results below: **Not run**. Record device/OS, signed app and native plugin version, commit/artifact, charger model/firmware, starting networks, permission state, timestamped events, expected result, and actual result. Exclude credentials.
+The owner accepted M1 and M2 on 2026-10-12 after reporting thorough testing. Per-scenario results and device/build identifiers were not supplied here, so this table remains an evidence-capture checklist rather than a reconstructed pass/fail log. Record device/OS, signed app and native plugin version, commit/artifact, charger model/firmware, starting networks, permission state, timestamped events, expected result, and actual result if those records become available. Exclude credentials.
 
 | ID | Scenario and steps | Expected result |
 | --- | --- | --- |
@@ -80,11 +91,11 @@ Use a Silla build that actually embeds this checkout's plugin; record the commit
 5. Repeat with location permission denied and location services disabled; confirm the failure explains the relevant requirement.
 6. Export app diagnostics and capture native `CapacitorWifi` log events for correlation. Check SSID observation and binding results without recording credentials.
 
-Review date/reviewer/device/build: Pending, deferred to the combined M1/M2 review. Implementation review outcome: Pending. Passing this review starts the mandatory hardening review, not definitive acceptance.
+Review/acceptance date: 2026-10-12. Owner reports thorough M1 testing and accepts the milestone. Reviewer/device/build and per-scenario results were not provided in this dossier.
 
 ## Combined M1/M2 Device Review
 
-Owner authorization on 2026-10-08 permits collecting device evidence in one batch. Use the same immutable plugin revision in both Android and iOS Silla builds. Run M1's steps above on Android, then the following on iPhone:
+Owner authorization on 2026-10-08 permitted collecting device evidence in one batch. On 2026-10-12 the owner reported thorough testing and accepted both M1 and M2. The same immutable revision/device/build identifiers and step-by-step results were not provided in this dossier; retain the following scenarios as a template for recording evidence if available:
 
 1. Start on home Wi-Fi with cellular enabled, connect to the offline charger, and confirm local health/login/live communication.
 2. On a connection that displays Apple's consent prompt, wait about one minute before accepting. With default settings, the prompt delay must not consume the later 30-second SSID confirmation budget. Record if no prompt is displayed.
@@ -94,9 +105,11 @@ Owner authorization on 2026-10-08 permits collecting device evidence in one batc
 6. After a timed-out attempt, disconnect without specifying an SSID; confirm it targets the tracked charger, even if home Wi-Fi is current. With an explicit target, verify only that app-owned configuration is selected for removal.
 7. Capture foreground/background transitions, actual native plugin/build identity, stages, elapsed times, SSID observations, and local service outcomes without credentials.
 
-Full native compilation and SwiftLint on macOS/Xcode should accompany this batch. Neither the Linux tests nor the batching exception accepts missing native build/device evidence. Final acceptance remains per milestone after combined review and hardening.
+The owner has accepted M1 and M2. Native compilation, SwiftLint, and device/build details are not independently documented here; the acceptance record is not a substitute for preserving those details when available. S3 remains unaccepted and requires its own evidence and review.
 
 ## Known Gaps
+
+Commit `b818e85` adds the initial plugin diagnostics and address classification but does not implement Silla-side health/login/WebSocket probes or recovery. The snapshot outcome is historical, and IP classification does not demonstrate local route or charger-service readiness. Android diagnostics tests, API/docs, Web build, and lint passed on 2026-10-12, including terminal outcomes, association ordering, routing stage, timeout/permission classification, legacy timing, unknown-versus-missing IP, and snapshot model isolation. Foundation-only iOS tests could not run because Swift is unavailable. Native iOS compilation/SwiftLint, device validation, and Silla integration remain outstanding; adapter call-site/device coverage, cleanup reporting, Android timeout-cap compatibility, and full cross-platform event parity remain open.
 
 Initial documentation preparation on 2026-10-08 checked all eight new documents' local file links and confirmed 25 functional plus four quality requirement IDs. QR-005 was subsequently added to require API documentation updates for every contract change. The initial check is documentation validation only, not native implementation evidence.
 
