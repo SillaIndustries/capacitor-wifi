@@ -83,6 +83,7 @@ npx cap sync
 
 * [`addNetwork(...)`](#addnetwork)
 * [`connect(...)`](#connect)
+* [`getConnectionDiagnostics()`](#getconnectiondiagnostics)
 * [`disconnect(...)`](#disconnect)
 * [`getAvailableNetworks()`](#getavailablenetworks)
 * [`getIpAddress()`](#getipaddress)
@@ -139,18 +140,73 @@ On Android, this creates a temporary connection that doesn't route traffic throu
 Set autoRouteTraffic to true to bind app traffic to the connected network (useful for local/device-hosted APs).
 For a persistent connection on Android, use addNetwork() instead.
 On iOS, this creates a persistent connection.
+iOS allows requestTimeoutMs (default 120000) for the configuration request and system
+consent prompt, then starts timeoutMs (default 30000) to confirm the requested SSID.
+A timeout/error keeps the persistent iOS configuration; the OS may finish joining later.
+Use disconnect() to cancel plugin verification and request configuration removal.
+The plugin cannot cancel Apple's pending system operation or dismiss its prompt.
+Android 10+ requests do not require internet access, regardless of autoRouteTraffic.
+Android SSID verification requires precise location permission and enabled location services.
+On Android 12+, verification uses location-inclusive callbacks for the requested network.
 
 Resolves only after the device is confirmed associated with the requested SSID.
+On Android, autoRouteTraffic: true also requires successful process binding;
+a binding failure rejects with CONNECTION_FAILED. Association does not prove that
+a charger or other local service is ready; check that service separately.
+Successful Android 10+ temporary connections are retained until disconnect(), replacement,
+network loss, or plugin destruction. Failure/cancellation releases the request and
+any process binding still owned by the plugin.
 On failure, rejects with a Capacitor error that includes a stable `code`
 from {@link WifiConnectionErrorCode}. Prefer `error.code` over parsing `error.message`.
 Specific codes are returned only when the native OS provides that reason;
 otherwise the plugin returns `CONNECTION_FAILED`.
+Errors from a started native attempt include optional data.ssidVerification
+('unavailable', 'mismatch', or 'match') and data.elapsedMs (Android excludes location authorization).
+On iOS, SSID observation is included for verification-stage errors.
+data.bindingSucceeded is Android-only and included when process binding was attempted.
+data.connectionStage distinguishes request/association from verification deadlines;
+unavailable SSID information is not proof that the phone failed to join.
+data.attemptId correlates a connection error with getConnectionDiagnostics().
+On Android, callback processing rechecks the timeout deadline before binding or resolving.
 
 | Param         | Type                                                      | Description          |
 | ------------- | --------------------------------------------------------- | -------------------- |
 | **`options`** | <code><a href="#connectoptions">ConnectOptions</a></code> | - Connection options |
 
 **Since:** 7.0.0
+
+--------------------
+
+
+### getConnectionDiagnostics()
+
+```typescript
+getConnectionDiagnostics() => Promise<WifiConnectionDiagnosticsSnapshot>
+```
+
+Get an identifier-free diagnostic snapshot of the latest accepted connection attempt.
+Available on Android and iOS; unsupported on Web. Concurrent connect() calls rejected
+with CONNECTION_IN_PROGRESS do not replace the ongoing attempt's report.
+The snapshot contains at most 64 recent events for that attempt, held only in memory.
+Older events are counted by droppedEventCount; a new attempt replaces the report.
+Before any attempt, attempt is absent and events is empty.
+
+This method does not request permissions, change routing, reconnect, or probe a service.
+Android reads IP information for the requested network, not the cellular/default network.
+iOS refreshes SSID/IP observations with a five-second lookup budget when a target is known;
+unavailable or superseded reads return unknown/cached observations, with sample timestamps.
+IP information is attributed to the iOS target only when its current SSID matches.
+Watchdog delivery can be delayed while the app cannot execute.
+
+The outcome is the historical result of connect(), not a live connectivity guarantee.
+An assigned IPv4 address does not prove a working route, internet, or charger-service readiness.
+In particular, link-local-only addressing is not evidence of successful DHCP configuration.
+Check local services separately in the application.
+
+Reports omit SSIDs, BSSIDs, actual IP addresses, passwords, tokens, and raw native messages.
+Error codes and numeric native reasons remain available without exporting localized text.
+
+**Returns:** <code>Promise&lt;<a href="#wificonnectiondiagnosticssnapshot">WifiConnectionDiagnosticsSnapshot</a>&gt;</code>
 
 --------------------
 
@@ -163,6 +219,14 @@ disconnect(options?: DisconnectOptions | undefined) => Promise<void>
 
 Disconnect from the current Wi-Fi network.
 On iOS, only disconnects from networks that were added via this plugin.
+Cancels a pending iOS connect() with CONNECTION_FAILED. An explicit SSID selects
+the configuration to remove; otherwise iOS targets the pending or most recently
+requested connection, falling back to the current SSID if no target is tracked.
+That fallback lookup is bounded to 120000 ms and can reject with CONNECTION_TIMEOUT.
+Late native results cannot resolve a cancelled call or remove a newer request for
+the same SSID. Saved networks owned by the user or another app cannot be removed.
+On Android, cancels a pending connect() with CONNECTION_FAILED and releases the
+retained Wi-Fi request and any process binding still owned by the plugin.
 
 | Param         | Type                                                            | Description                   |
 | ------------- | --------------------------------------------------------------- | ----------------------------- |
@@ -442,22 +506,61 @@ Options for adding a network
 
 Options for connecting to a network
 
-| Prop                   | Type                 | Description                                                                                                                                                                                                                                                                                                                         | Default            | Since |
-| ---------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ----- |
-| **`ssid`**             | <code>string</code>  | The SSID of the network to connect to                                                                                                                                                                                                                                                                                               |                    | 7.0.0 |
-| **`password`**         | <code>string</code>  | The password for the network (optional for open networks)                                                                                                                                                                                                                                                                           |                    | 7.0.0 |
-| **`isHiddenSsid`**     | <code>boolean</code> | Whether the network is hidden (Android only)                                                                                                                                                                                                                                                                                        | <code>false</code> | 7.0.0 |
-| **`autoRouteTraffic`** | <code>boolean</code> | Whether to automatically route app traffic through the connected Wi-Fi network (Android only) When enabled, it binds the app process to the connected network using ConnectivityManager.bindProcessToNetwork() This is useful for connecting to local/device-hosted APs (e.g., ESP32, IoT devices) that don't have internet access. | <code>false</code> | 7.0.0 |
-| **`timeoutMs`**        | <code>number</code>  | Maximum time in milliseconds to wait for confirmation that the device is associated with the requested SSID before rejecting with `CONNECTION_TIMEOUT`. Must be a positive number when provided.                                                                                                                                    | <code>30000</code> | 8.5.0 |
+| Prop                   | Type                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Default             | Since |
+| ---------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ----- |
+| **`ssid`**             | <code>string</code>  | The SSID of the network to connect to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |                     | 7.0.0 |
+| **`password`**         | <code>string</code>  | The password for the network (optional for open networks)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |                     | 7.0.0 |
+| **`isHiddenSsid`**     | <code>boolean</code> | Whether the network is hidden (Android only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | <code>false</code>  | 7.0.0 |
+| **`autoRouteTraffic`** | <code>boolean</code> | Whether to automatically route app traffic through the connected Wi-Fi network (Android only) When enabled, it binds the app process to the connected network using ConnectivityManager.bindProcessToNetwork() This is useful for connecting to local/device-hosted APs (e.g., ESP32, IoT devices) that don't have internet access. Does not require the Wi-Fi network to provide internet access. If process binding fails, connect() rejects with CONNECTION_FAILED and data.bindingSucceeded is false. While bound to an offline AP, app cloud requests may fail even if cellular is available. Disconnect or replace the connection to release the plugin-owned routing.                                                                                                                                                                                                                                                                                         | <code>false</code>  | 7.0.0 |
+| **`timeoutMs`**        | <code>number</code>  | Maximum time in milliseconds to wait for confirmation that the device is associated with the requested SSID before rejecting with `CONNECTION_TIMEOUT`. Must be positive when provided. Android accepts positive integer milliseconds (up to the platform's signed 32-bit timeout range); iOS accepts finite positive values up to 600000 ms. On Android, the budget starts after location authorization and before the native Wi-Fi request, so time spent in the system Wi-Fi consent dialog counts toward it. On Android 10+, a timeout releases the temporary request and plugin-owned process binding. On iOS, this is a separate verification budget starting after the configuration request succeeds (or reports alreadyAssociated); system consent uses requestTimeoutMs. iOS accepts finite positive values up to 600000 ms and retains configuration on timeout. Native watchdogs run when the app can execute; background suspension can delay delivery. | <code>30000</code>  | 8.5.0 |
+| **`requestTimeoutMs`** | <code>number</code>  | Maximum time in milliseconds for the iOS hotspot configuration request to complete, including the system consent prompt. iOS only; ignored on Android and Web. After success/alreadyAssociated, timeoutMs provides a separate SSID verification budget. Must be a finite positive number no greater than 600000 when provided on iOS. Expiry rejects with CONNECTION_TIMEOUT and data.connectionStage: 'request', retaining the persistent configuration. Apple's operation can complete after the plugin times out. Watchdog delivery can be delayed while the app is suspended.                                                                                                                                                                                                                                                                                                                                                                                    | <code>120000</code> |       |
+
+
+#### WifiConnectionDiagnosticsSnapshot
+
+In-memory diagnostic report for the latest accepted plugin connection attempt.
+
+| Prop                    | Type                                                                    | Description                                                                  |
+| ----------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| **`platform`**          | <code>'android' \| 'ios'</code>                                         | Native platform producing the report.                                        |
+| **`pluginVersion`**     | <code>string</code>                                                     | Native plugin version; record the fork commit/build identity separately.     |
+| **`capturedAt`**        | <code>number</code>                                                     | Unix epoch milliseconds when the snapshot was produced.                      |
+| **`eventLimit`**        | <code>number</code>                                                     | Maximum retained events per attempt; currently 64.                           |
+| **`droppedEventCount`** | <code>number</code>                                                     | Number of events discarded from the beginning of this attempt's history.     |
+| **`attempt`**           | <code><a href="#wifidiagnosticattempt">WifiDiagnosticAttempt</a></code> | Absent before the first accepted attempt.                                    |
+| **`events`**            | <code>WifiDiagnosticEvent[]</code>                                      | Retained events in sequence order. No disk persistence or unlimited history. |
+
+
+#### WifiDiagnosticAttempt
+
+Latest connection attempt's diagnostic state.
+
+| Prop            | Type                | Description                                                     |
+| --------------- | ------------------- | --------------------------------------------------------------- |
+| **`id`**        | <code>number</code> | Session-local identifier. Does not identify a physical network. |
+| **`startedAt`** | <code>number</code> | Unix epoch milliseconds when the plugin reserved the attempt.   |
+| **`updatedAt`** | <code>number</code> | Unix epoch milliseconds of the most recent diagnostic update.   |
+
+
+#### WifiDiagnosticEvent
+
+A chronological event with the diagnostic state observed at that point.
+
+| Prop            | Type                                                                                                                                                                                                                                                                                                                                                                                                             | Description                                                                                                                                                                                                                                                                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`attemptId`** | <code>number</code>                                                                                                                                                                                                                                                                                                                                                                                              | Session-local attempt identifier.                                                                                                                                                                                                                                                                                                                      |
+| **`sequence`**  | <code>number</code>                                                                                                                                                                                                                                                                                                                                                                                              | Increasing sequence within the attempt; missing earlier numbers indicate dropped events.                                                                                                                                                                                                                                                               |
+| **`timestamp`** | <code>number</code>                                                                                                                                                                                                                                                                                                                                                                                              | Unix epoch milliseconds. Use sequence/elapsedMs for ordering if the wall clock changes.                                                                                                                                                                                                                                                                |
+| **`type`**      | <code>'cleanup' \| 'attemptStarted' \| 'permissionRequested' \| 'requestStarted' \| 'requestCompleted' \| 'networkAvailable' \| 'associationConfirmed' \| 'verificationStarted' \| 'capabilitiesChanged' \| 'ssidVerification' \| 'bindingResult' \| 'ipReadiness' \| 'connectionSucceeded' \| 'connectionFailed' \| 'connectionTimedOut' \| 'permissionDenied' \| 'connectionCancelled' \| 'networkLost'</code> | Native lifecycle observation or completion. Not all types are available on every platform. `verificationStarted` marks the start of SSID checking; it is not an SSID observation. `associationConfirmed` is emitted only after the requested SSID is observed. `connectionTimedOut` and `permissionDenied` distinguish those terminal failure classes. |
 
 
 #### DisconnectOptions
 
 Options for disconnecting from a network
 
-| Prop       | Type                | Description                                           | Since |
-| ---------- | ------------------- | ----------------------------------------------------- | ----- |
-| **`ssid`** | <code>string</code> | The SSID of the network to disconnect from (optional) | 7.0.0 |
+| Prop       | Type                | Description                                                                                                                                                                                                                                                                                                                                                                    | Since |
+| ---------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- |
+| **`ssid`** | <code>string</code> | The SSID of the network to disconnect from (optional) On iOS, omission prefers the pending or most recently requested connection; if neither is tracked, the plugin reads the current SSID. Supplying the app-owned target is useful after an app restart. Cancelling a pending attempt does not remove a different SSID's configuration when an explicit target was supplied. | 7.0.0 |
 
 
 #### GetAvailableNetworksResult

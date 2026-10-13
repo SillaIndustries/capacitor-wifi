@@ -17,6 +17,7 @@ import type {
   ShareNetworkOptions,
   ShareNetworkResult,
   WifiInfo,
+  WifiConnectionDiagnosticsSnapshot,
 } from './definitions';
 
 export class CapacitorWifiWeb extends WebPlugin implements CapacitorWifiPlugin {
@@ -29,6 +30,10 @@ export class CapacitorWifiWeb extends WebPlugin implements CapacitorWifiPlugin {
   }
 
   async disconnect(_options?: DisconnectOptions): Promise<void> {
+    throw this.unimplemented('Not implemented on web.');
+  }
+
+  async getConnectionDiagnostics(): Promise<WifiConnectionDiagnosticsSnapshot> {
     throw this.unimplemented('Not implemented on web.');
   }
 
