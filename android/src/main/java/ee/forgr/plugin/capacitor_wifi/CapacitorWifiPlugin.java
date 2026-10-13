@@ -7,7 +7,11 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
@@ -23,6 +27,7 @@ import android.net.wifi.WifiNetworkSuggestion;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import androidx.activity.result.ActivityResult;
 import androidx.annotation.NonNull;
@@ -44,9 +49,9 @@ import java.net.NetworkInterface;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import org.json.JSONObject;
 
 @CapacitorPlugin(
     name = "CapacitorWifi",
@@ -62,8 +67,7 @@ public class CapacitorWifiPlugin extends Plugin {
     private ConnectivityManager connectivityManager;
     private BroadcastReceiver scanResultsReceiver;
     private ConnectivityManager.NetworkCallback networkCallback;
-    private Network boundNetwork; // Store the network we bound to for unbinding
-    private final Object boundNetworkLock = new Object();
+    private WifiProcessBinding<Network> processBinding;
     private static final String ACTION_WIFI_DPP_CONFIGURATOR_QR_CODE_GENERATOR = "android.settings.WIFI_DPP_CONFIGURATOR_QR_CODE_GENERATOR";
     private static final String EXTRA_WIFI_SECURITY = "wifi_security";
     private static final String EXTRA_WIFI_SSID = "wifi_ssid";
@@ -72,23 +76,43 @@ public class CapacitorWifiPlugin extends Plugin {
     private static final int DEFAULT_CONNECT_TIMEOUT_MS = 30000;
     private static final long SSID_VERIFY_POLL_MS = 500;
 
-    private final Object connectLock = new Object();
-    private final AtomicInteger connectGeneration = new AtomicInteger(0);
+    // Connection methods, callbacks, timers, and cleanup all run on this handler.
+    private int connectGeneration;
     private final Handler connectHandler = new Handler(Looper.getMainLooper());
     private PluginCall activeConnectCall;
-    private AtomicBoolean connectCompleted;
+    private WifiConnectionState<Network> connectionState;
     private Runnable connectTimeoutRunnable;
     private Runnable ssidVerifyRunnable;
     private WifiManager.LocalOnlyConnectionFailureListener localOnlyFailureListener;
-    private String pendingConnectSsid;
     private Boolean pendingAutoRouteTraffic;
-
-    // Lock for thread-safe access to boundNetwork
+    private String connectionStage = "request";
+    private WifiConnectionState.Verification ssidVerification = WifiConnectionState.Verification.UNAVAILABLE;
+    private Boolean bindingSucceeded;
+    private String attemptedCallId;
+    private long connectStartedAt;
+    private boolean destroyed;
+    private long diagnosticSequence;
+    private String diagnosticCallId;
+    private WifiConnectionDiagnostics lastDiagnostics;
+    private WifiConnectionDiagnostics nativeDiagnostics;
 
     @Override
     public void load() {
         wifiManager = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         connectivityManager = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        processBinding = new WifiProcessBinding<>(
+            new WifiProcessBinding.Driver<Network>() {
+                @Override
+                public Network current() {
+                    return connectivityManager.getBoundNetworkForProcess();
+                }
+
+                @Override
+                public boolean bind(Network network) {
+                    return connectivityManager.bindProcessToNetwork(network);
+                }
+            }
+        );
     }
 
     @PluginMethod
@@ -255,27 +279,49 @@ public class CapacitorWifiPlugin extends Plugin {
 
     @PluginMethod
     public void connect(PluginCall call) {
-        synchronized (connectLock) {
-            if (activeConnectCall != null && connectCompleted != null && !connectCompleted.get()) {
-                rejectConnect(
-                    call,
-                    "CONNECTION_IN_PROGRESS",
-                    "Another Wi-Fi connection attempt is already in progress.",
-                    "request",
-                    null,
-                    null
-                );
-                return;
-            }
-            // Reserve the slot early so permission prompts cannot overlap with another connect().
-            activeConnectCall = call;
-            connectCompleted = new AtomicBoolean(false);
-        }
+        connectHandler.post(() -> startConnect(call));
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            connectModern(call);
-        } else {
-            connectLegacy(call);
+    private void startConnect(PluginCall call) {
+        if (destroyed) {
+            rejectConnect(call, "CONNECTION_FAILED", "Plugin has been destroyed.", "request", null, null);
+            return;
+        }
+        if (activeConnectCall != null) {
+            rejectConnect(
+                call,
+                "CONNECTION_IN_PROGRESS",
+                "Another Wi-Fi connection attempt is already in progress.",
+                "request",
+                null,
+                null
+            );
+            return;
+        }
+        // Reserve the slot early so permission prompts cannot overlap with another connect().
+        activeConnectCall = call;
+        diagnosticCallId = call.getCallbackId();
+        lastDiagnostics = new WifiConnectionDiagnostics(
+            ++diagnosticSequence,
+            System.currentTimeMillis(),
+            SystemClock.elapsedRealtime(),
+            Boolean.TRUE.equals(call.getBoolean("autoRouteTraffic", false))
+        );
+
+        continueConnect(call);
+    }
+
+    private void continueConnect(PluginCall call) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                connectModern(call);
+            } else {
+                connectLegacy(call);
+            }
+        } catch (SecurityException e) {
+            rejectConnectAndClear(call, "PERMISSION_DENIED", "Missing permission to connect to Wi-Fi.", "permission");
+        } catch (Exception e) {
+            rejectConnectAndClear(call, "UNKNOWN", "Unable to start the Wi-Fi connection request.", "request");
         }
     }
 
@@ -289,7 +335,7 @@ public class CapacitorWifiPlugin extends Plugin {
 
         Integer timeoutMs = resolveTimeoutMs(call);
         if (timeoutMs == null) {
-            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive number.", "validation");
+            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive integer.", "validation");
             return;
         }
 
@@ -307,19 +353,28 @@ public class CapacitorWifiPlugin extends Plugin {
             return;
         }
 
+        if (getContext().checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            lastDiagnostics.record(
+                WifiConnectionDiagnostics.EventType.PERMISSION_REQUESTED,
+                "permission",
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
+            requestPermissionForAlias("location", call, "connectCallback");
+            return;
+        }
+        LocationManager locationManager = (LocationManager) getContext().getSystemService(Context.LOCATION_SERVICE);
+        if (locationManager == null || !locationManager.isLocationEnabled()) {
+            rejectConnectAndClear(call, "PERMISSION_DENIED", "Location services must be enabled to verify the Wi-Fi SSID.", "permission");
+            return;
+        }
+
         final int generation = beginConnectAttempt(call, ssid, autoRouteTraffic, timeoutMs);
+        if (generation < 0) {
+            return;
+        }
 
         try {
-            // Drop any previous local-only callback so a new request can take over.
-            if (networkCallback != null) {
-                try {
-                    connectivityManager.unregisterNetworkCallback(networkCallback);
-                } catch (Exception ignored) {
-                    // already unregistered
-                }
-                networkCallback = null;
-            }
-
             WifiNetworkSpecifier.Builder specifierBuilder = new WifiNetworkSpecifier.Builder().setSsid(ssid);
 
             if (isHiddenSsid != null && isHiddenSsid) {
@@ -336,71 +391,18 @@ public class CapacitorWifiPlugin extends Plugin {
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                 .setNetworkSpecifier(specifier);
 
-            // Only remove internet capability if autoRouteTraffic is false
-            // If autoRouteTraffic is true, we want Android to consider this network valid for routing
-            boolean localOnly = autoRouteTraffic == null || !autoRouteTraffic;
-            if (localOnly) {
-                requestBuilder.removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-            }
+            // Joining an offline AP and binding app traffic are independent policies.
+            requestBuilder.removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
 
             NetworkRequest request = requestBuilder.build();
 
-            if (localOnly && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 registerLocalOnlyFailureListener(generation, specifier);
             }
 
-            networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override
-                public void onAvailable(@NonNull Network network) {
-                    super.onAvailable(network);
-
-                    if (!isCurrentConnectAttempt(generation)) {
-                        return;
-                    }
-
-                    // Bind process to network if autoRouteTraffic is enabled
-                    if (autoRouteTraffic != null && autoRouteTraffic) {
-                        try {
-                            synchronized (boundNetworkLock) {
-                                // Unbind from previous network if any
-                                if (boundNetwork != null) {
-                                    connectivityManager.bindProcessToNetwork(null);
-                                }
-
-                                // Bind to the new network
-                                boolean bound = connectivityManager.bindProcessToNetwork(network);
-                                if (bound) {
-                                    boundNetwork = network;
-                                }
-                            }
-                        } catch (Exception e) {
-                            // Log error but don't fail the connection
-                            android.util.Log.e("CapacitorWifi", "Failed to bind process to network: " + e.getMessage());
-                        }
-                    }
-
-                    startSsidVerification(generation, network, ssid, true);
-                }
-
-                @Override
-                public void onUnavailable() {
-                    super.onUnavailable();
-                    // onUnavailable has no reliable detailed reason.
-                    // On API 34+ local-only connects, prefer LocalOnlyConnectionFailureListener.
-                    if (localOnly && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        return;
-                    }
-                    completeConnectFailure(
-                        generation,
-                        "CONNECTION_FAILED",
-                        "Failed to connect to network.",
-                        "association",
-                        null,
-                        null,
-                        true
-                    );
-                }
-            };
+            networkCallback = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                ? new WifiConnectCallback(generation, ssid, ConnectivityManager.NetworkCallback.FLAG_INCLUDE_LOCATION_INFO)
+                : new WifiConnectCallback(generation, ssid);
 
             connectivityManager.requestNetwork(request, networkCallback);
         } catch (SecurityException e) {
@@ -438,6 +440,12 @@ public class CapacitorWifiPlugin extends Plugin {
 
     private void connectLegacy(PluginCall call) {
         if (getPermissionState("location") != PermissionState.GRANTED) {
+            lastDiagnostics.record(
+                WifiConnectionDiagnostics.EventType.PERMISSION_REQUESTED,
+                "permission",
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
             requestPermissionForAlias("location", call, "connectCallback");
             return;
         }
@@ -450,7 +458,7 @@ public class CapacitorWifiPlugin extends Plugin {
 
         Integer timeoutMs = resolveTimeoutMs(call);
         if (timeoutMs == null) {
-            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive number.", "validation");
+            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive integer.", "validation");
             return;
         }
 
@@ -469,6 +477,9 @@ public class CapacitorWifiPlugin extends Plugin {
         }
 
         final int generation = beginConnectAttempt(call, ssid, autoRouteTraffic, timeoutMs);
+        if (generation < 0) {
+            return;
+        }
 
         try {
             WifiConfiguration wifiConfig = new WifiConfiguration();
@@ -561,8 +572,12 @@ public class CapacitorWifiPlugin extends Plugin {
 
     @PluginMethod
     public void disconnect(PluginCall call) {
+        connectHandler.post(() -> disconnectOnHandler(call));
+    }
+
+    private void disconnectOnHandler(PluginCall call) {
         try {
-            int generation = connectGeneration.get();
+            int generation = connectGeneration;
             completeConnectFailure(
                 generation,
                 "CONNECTION_FAILED",
@@ -573,24 +588,16 @@ public class CapacitorWifiPlugin extends Plugin {
                 false
             );
 
-            // Unbind from network if we were bound
-            synchronized (boundNetworkLock) {
-                if (boundNetwork != null) {
-                    connectivityManager.bindProcessToNetwork(null);
-                    boundNetwork = null;
-                    android.util.Log.d("CapacitorWifi", "Unbound process from network");
-                }
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                if (networkCallback != null) {
-                    connectivityManager.unregisterNetworkCallback(networkCallback);
-                    networkCallback = null;
-                }
-            } else {
+            boolean released = releaseConnection();
+            // Invalidate queued native/permission callbacks even after success.
+            connectGeneration++;
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                 wifiManager.disconnect();
             }
-            removeLocalOnlyFailureListener();
+            if (!released) {
+                call.reject("Failed to release the plugin's Wi-Fi connection resources.");
+                return;
+            }
             call.resolve();
         } catch (Exception e) {
             call.reject("Failed to disconnect: " + e.getMessage(), e);
@@ -1002,6 +1009,29 @@ public class CapacitorWifiPlugin extends Plugin {
         }
     }
 
+    @PluginMethod
+    public void getConnectionDiagnostics(PluginCall call) {
+        connectHandler.post(() -> {
+            if (lastDiagnostics != null) {
+                observeConnectionIp(lastDiagnostics, connectionState == null ? null : connectionState.getNetwork());
+            }
+            JSObject result = new JSObject();
+            result.put("platform", "android");
+            result.put("pluginVersion", pluginVersion);
+            result.put("capturedAt", System.currentTimeMillis());
+            result.put("eventLimit", WifiConnectionDiagnostics.EVENT_LIMIT);
+            result.put("droppedEventCount", 0);
+            result.put("events", new JSArray());
+            if (lastDiagnostics != null) {
+                Map<String, Object> snapshot = lastDiagnostics.snapshot(SystemClock.elapsedRealtime());
+                result.put("attempt", new JSONObject((Map<?, ?>) snapshot.get("attempt")));
+                result.put("events", new JSArray((List<?>) snapshot.get("events")));
+                result.put("droppedEventCount", snapshot.get("droppedEventCount"));
+            }
+            call.resolve(result);
+        });
+    }
+
     @PermissionCallback
     private void addNetworkCallback(PluginCall call) {
         if (getPermissionState("location") == PermissionState.GRANTED) {
@@ -1013,11 +1043,21 @@ public class CapacitorWifiPlugin extends Plugin {
 
     @PermissionCallback
     private void connectCallback(PluginCall call) {
-        if (getPermissionState("location") == PermissionState.GRANTED) {
-            connectLegacy(call);
-        } else {
-            rejectConnectAndClear(call, "PERMISSION_DENIED", "Location permission is required.", "permission");
-        }
+        connectHandler.post(() -> {
+            if (destroyed || activeConnectCall != call) {
+                return;
+            }
+            if (getContext().checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                rejectConnectAndClear(
+                    call,
+                    "PERMISSION_DENIED",
+                    "Precise location permission is required to verify the Wi-Fi SSID.",
+                    "permission"
+                );
+            } else {
+                continueConnect(call);
+            }
+        });
     }
 
     @PermissionCallback
@@ -1076,25 +1116,16 @@ public class CapacitorWifiPlugin extends Plugin {
             scanResultsReceiver = null;
         }
 
-        if (networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                connectivityManager.unregisterNetworkCallback(networkCallback);
-            } catch (Exception e) {
-                // Callback not registered
-            }
-            networkCallback = null;
-        }
+        connectHandler.post(() -> {
+            destroyed = true;
+            completeConnectFailure(connectGeneration, "CONNECTION_FAILED", "Plugin has been destroyed.", "request", null, null, true);
+            releaseConnection();
+            connectGeneration++;
+        });
     }
 
     private void clearConnectReservation() {
-        synchronized (connectLock) {
-            activeConnectCall = null;
-            connectCompleted = null;
-            pendingConnectSsid = null;
-            pendingAutoRouteTraffic = null;
-        }
-        clearConnectTimeout();
-        clearSsidVerification();
+        activeConnectCall = null;
     }
 
     private void rejectConnectAndClear(PluginCall call, String code, String message, String stage) {
@@ -1107,7 +1138,7 @@ public class CapacitorWifiPlugin extends Plugin {
             return DEFAULT_CONNECT_TIMEOUT_MS;
         }
         Integer timeoutMs = call.getInt("timeoutMs");
-        if (timeoutMs == null || timeoutMs <= 0) {
+        if (!WifiConnectionState.isValidTimeout(timeoutMs)) {
             return null;
         }
         return timeoutMs;
@@ -1132,27 +1163,29 @@ public class CapacitorWifiPlugin extends Plugin {
     }
 
     private int beginConnectAttempt(PluginCall call, String ssid, Boolean autoRouteTraffic, int timeoutMs) {
-        int generation = connectGeneration.incrementAndGet();
-        synchronized (connectLock) {
-            activeConnectCall = call;
-            if (connectCompleted == null) {
-                connectCompleted = new AtomicBoolean(false);
-            } else {
-                connectCompleted.set(false);
-            }
-            pendingConnectSsid = ssid;
-            pendingAutoRouteTraffic = autoRouteTraffic;
+        if (!releaseConnection()) {
+            rejectConnectAndClear(call, "CONNECTION_FAILED", "Failed to release the previous Wi-Fi connection resources.", "request");
+            return -1;
         }
-        clearConnectTimeout();
-        clearSsidVerification();
-        removeLocalOnlyFailureListener();
+        int generation = ++connectGeneration;
+        nativeDiagnostics = lastDiagnostics;
+        activeConnectCall = call;
+        connectionState = new WifiConnectionState<>(ssid, SystemClock.elapsedRealtime() + timeoutMs);
+        pendingAutoRouteTraffic = autoRouteTraffic;
+        connectionStage = "request";
+        ssidVerification = WifiConnectionState.Verification.UNAVAILABLE;
+        bindingSucceeded = null;
+        connectStartedAt = SystemClock.elapsedRealtime();
+        attemptedCallId = call.getCallbackId();
+        logConnect("request");
+        recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.REQUEST_STARTED, "request");
 
         connectTimeoutRunnable = () ->
             completeConnectFailure(
                 generation,
                 "CONNECTION_TIMEOUT",
                 "Timed out waiting for Wi-Fi connection confirmation.",
-                "verification",
+                connectionStage,
                 null,
                 null,
                 true
@@ -1162,21 +1195,47 @@ public class CapacitorWifiPlugin extends Plugin {
     }
 
     private boolean isCurrentConnectAttempt(int generation) {
-        return generation == connectGeneration.get();
+        return !destroyed && generation == connectGeneration;
+    }
+
+    private boolean isPendingConnectAttempt(int generation) {
+        return isCurrentConnectAttempt(generation) && activeConnectCall != null && connectionState != null && connectionState.isPending();
+    }
+
+    private boolean expireConnectIfNeeded(int generation) {
+        if (!isPendingConnectAttempt(generation) || !connectionState.hasExpired(SystemClock.elapsedRealtime())) {
+            return false;
+        }
+        completeConnectFailure(
+            generation,
+            "CONNECTION_TIMEOUT",
+            "Timed out waiting for Wi-Fi connection confirmation.",
+            connectionStage,
+            null,
+            null,
+            true
+        );
+        return true;
     }
 
     private void startSsidVerification(int generation, @Nullable Network network, String expectedSsid, boolean keepCallbackOnSuccess) {
+        // The legacy reconnect path is still waiting for association; modern specifier
+        // requests have already received the requested Network and are checking its identity.
+        connectionStage = network == null ? "association" : "verification";
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.record(
+                WifiConnectionDiagnostics.EventType.VERIFICATION_STARTED,
+                connectionStage,
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
+        }
         clearSsidVerification();
         ssidVerifyRunnable = new Runnable() {
             @Override
             public void run() {
-                if (!isCurrentConnectAttempt(generation)) {
+                if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation)) {
                     return;
-                }
-                synchronized (connectLock) {
-                    if (connectCompleted == null || connectCompleted.get()) {
-                        return;
-                    }
                 }
 
                 if (ssidMatches(expectedSsid, network)) {
@@ -1191,26 +1250,52 @@ public class CapacitorWifiPlugin extends Plugin {
     }
 
     private boolean ssidMatches(String expectedSsid, @Nullable Network network) {
-        String current = getConnectedSsid(network);
-        if (current == null) {
-            return false;
+        WifiConnectionState.Verification previous = ssidVerification;
+        if (network == null) {
+            // Pre-29 does not use a specifier request or concurrent local-only Wi-Fi.
+            String current = getLegacySsid();
+            ssidVerification = current == null
+                ? WifiConnectionState.Verification.UNAVAILABLE
+                : expectedSsid.equals(current)
+                    ? WifiConnectionState.Verification.MATCH
+                    : WifiConnectionState.Verification.MISMATCH;
+        } else {
+            Network fallbackNetwork = null;
+            String fallbackSsid = null;
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                // API 29/30 do not support the location-inclusive callback flag.
+                // Accept the legacy reader only if exactly one visible Wi-Fi network exists
+                // and it is the one returned by this request. Never use a default SSID alone.
+                fallbackNetwork = getOnlyWifiNetwork();
+                if (network.equals(fallbackNetwork)) {
+                    fallbackSsid = getLegacySsid();
+                }
+            }
+            ssidVerification = connectionState.verify(fallbackSsid, fallbackNetwork);
         }
-        return expectedSsid.equals(current);
+        if (previous != ssidVerification) {
+            logConnect("verification:" + ssidVerification.name().toLowerCase(java.util.Locale.ROOT));
+        }
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.observeSsid(
+                ssidVerification.name().toLowerCase(java.util.Locale.ROOT),
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
+        }
+        boolean matched = ssidVerification == WifiConnectionState.Verification.MATCH;
+        if (matched && nativeDiagnostics != null) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_AVAILABLE, "association");
+            }
+            nativeDiagnostics.associationConfirmed(System.currentTimeMillis(), SystemClock.elapsedRealtime());
+        }
+        return matched;
     }
 
     @Nullable
-    private String getConnectedSsid(@Nullable Network network) {
+    private String getLegacySsid() {
         try {
-            if (network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
-                if (capabilities != null) {
-                    TransportInfo transportInfo = capabilities.getTransportInfo();
-                    if (transportInfo instanceof WifiInfo) {
-                        return normalizeSsid(((WifiInfo) transportInfo).getSSID());
-                    }
-                }
-            }
-
             WifiInfo wifiInfo = wifiManager.getConnectionInfo();
             if (wifiInfo != null) {
                 return normalizeSsid(wifiInfo.getSSID());
@@ -1223,26 +1308,41 @@ public class CapacitorWifiPlugin extends Plugin {
 
     @Nullable
     private String normalizeSsid(@Nullable String ssid) {
-        if (ssid == null || ssid.isEmpty() || "<unknown ssid>".equalsIgnoreCase(ssid)) {
+        return WifiConnectionState.normalizeSsid(ssid);
+    }
+
+    @Nullable
+    private Network getOnlyWifiNetwork() {
+        Network only = null;
+        try {
+            for (Network candidate : connectivityManager.getAllNetworks()) {
+                NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(candidate);
+                if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    if (only != null) {
+                        return null;
+                    }
+                    only = candidate;
+                }
+            }
+        } catch (Exception e) {
             return null;
         }
-        if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() >= 2) {
-            return ssid.substring(1, ssid.length() - 1);
-        }
-        return ssid;
+        return only;
     }
 
     @RequiresApi(api = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     private void registerLocalOnlyFailureListener(int generation, NetworkSpecifier specifier) {
         removeLocalOnlyFailureListener();
+        if (localOnlyFailureListener != null) {
+            throw new IllegalStateException("Previous Wi-Fi failure listener could not be released.");
+        }
         if (!(specifier instanceof WifiNetworkSpecifier)) {
             return;
         }
         localOnlyFailureListener = (failedSpecifier, failureReason) -> {
-            if (!isCurrentConnectAttempt(generation)) {
+            if (!isPendingConnectAttempt(generation) || !specifier.equals(failedSpecifier)) {
                 return;
             }
-            // Only one plugin connect attempt is active at a time; accept the failure for this generation.
             String code = mapLocalOnlyFailureReason(failureReason);
             String stage = mapLocalOnlyFailureStage(failureReason);
             completeConnectFailure(generation, code, "Failed to connect to network.", stage, failureReason, null, true);
@@ -1279,54 +1379,44 @@ public class CapacitorWifiPlugin extends Plugin {
     }
 
     private void completeConnectSuccess(int generation, @Nullable Network network, boolean keepCallbackOnSuccess) {
-        if (!isCurrentConnectAttempt(generation)) {
+        if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation)) {
             return;
         }
 
-        PluginCall call;
-        Boolean autoRouteTraffic;
-        synchronized (connectLock) {
-            if (connectCompleted == null || !connectCompleted.compareAndSet(false, true)) {
+        // Legacy path: bind after SSID confirmation when requested.
+        if (!keepCallbackOnSuccess && Boolean.TRUE.equals(pendingAutoRouteTraffic)) {
+            bindingSucceeded = false;
+            Network wifiNetwork = getOnlyWifiNetwork();
+            if (wifiNetwork == null || !bindConnectNetwork(generation, wifiNetwork)) {
+                if (isPendingConnectAttempt(generation)) {
+                    completeConnectFailure(
+                        generation,
+                        "CONNECTION_FAILED",
+                        "Cannot identify a Wi-Fi network for app routing.",
+                        "routing",
+                        null,
+                        null,
+                        true
+                    );
+                }
                 return;
             }
-            call = activeConnectCall;
-            autoRouteTraffic = pendingAutoRouteTraffic;
-            activeConnectCall = null;
-            pendingConnectSsid = null;
-            pendingAutoRouteTraffic = null;
         }
 
+        if (!connectionState.finish()) {
+            return;
+        }
+        PluginCall call = activeConnectCall;
+        activeConnectCall = null;
         clearConnectTimeout();
         clearSsidVerification();
         removeLocalOnlyFailureListener();
-
-        // Legacy path: bind after SSID confirmation when requested.
-        if (!keepCallbackOnSuccess && autoRouteTraffic != null && autoRouteTraffic) {
-            try {
-                synchronized (boundNetworkLock) {
-                    if (boundNetwork != null) {
-                        connectivityManager.bindProcessToNetwork(null);
-                    }
-                    Network activeNetwork = network != null ? network : connectivityManager.getActiveNetwork();
-                    if (activeNetwork != null) {
-                        boolean bound = connectivityManager.bindProcessToNetwork(activeNetwork);
-                        if (bound) {
-                            boundNetwork = activeNetwork;
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                android.util.Log.e("CapacitorWifi", "Failed to bind process to network: " + e.getMessage());
-            }
+        logConnect("success");
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.succeed(System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            observeConnectionIp(nativeDiagnostics, network);
         }
-
-        if (!keepCallbackOnSuccess && networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Legacy connect does not keep a NetworkCallback.
-        }
-
-        if (call != null) {
-            call.resolve();
-        }
+        call.resolve();
     }
 
     private void completeConnectFailure(
@@ -1338,37 +1428,235 @@ public class CapacitorWifiPlugin extends Plugin {
         @Nullable String nativeMessage,
         boolean cleanupNetworkCallback
     ) {
-        if (!isCurrentConnectAttempt(generation)) {
+        if (generation != connectGeneration || activeConnectCall == null) {
             return;
         }
 
-        PluginCall call;
-        synchronized (connectLock) {
-            if (connectCompleted == null || !connectCompleted.compareAndSet(false, true)) {
-                return;
-            }
-            call = activeConnectCall;
-            activeConnectCall = null;
-            pendingConnectSsid = null;
-            pendingAutoRouteTraffic = null;
+        if (connectionState != null && connectionState.isPending()) {
+            connectionState.finish();
         }
+        PluginCall call = activeConnectCall;
+        activeConnectCall = null;
 
         clearConnectTimeout();
         clearSsidVerification();
         removeLocalOnlyFailureListener();
 
-        if (cleanupNetworkCallback && networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                connectivityManager.unregisterNetworkCallback(networkCallback);
-            } catch (Exception ignored) {
-                // already unregistered
-            }
-            networkCallback = null;
+        WifiConnectionDiagnostics diagnostic = call.getCallbackId().equals(attemptedCallId) ? nativeDiagnostics : lastDiagnostics;
+        if (diagnostic != null) {
+            diagnostic.fail(
+                code,
+                stage,
+                nativeCode,
+                message.startsWith("Connection canceled"),
+                System.currentTimeMillis(),
+                SystemClock.elapsedRealtime()
+            );
+        }
+        logConnect("failure:" + code);
+        rejectConnect(call, code, message, stage, nativeCode, nativeMessage);
+        if (cleanupNetworkCallback) {
+            releaseConnection();
+        }
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.Q)
+    private final class WifiConnectCallback extends ConnectivityManager.NetworkCallback {
+
+        private final int generation;
+        private final String ssid;
+
+        WifiConnectCallback(int generation, String ssid) {
+            this.generation = generation;
+            this.ssid = ssid;
         }
 
-        if (call != null) {
-            rejectConnect(call, code, message, stage, nativeCode, nativeMessage);
+        @RequiresApi(api = Build.VERSION_CODES.S)
+        WifiConnectCallback(int generation, String ssid, int flags) {
+            super(flags);
+            this.generation = generation;
+            this.ssid = ssid;
         }
+
+        @Override
+        public void onAvailable(@NonNull Network network) {
+            connectHandler.post(() -> {
+                if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation) || !connectionState.onAvailable(network)) {
+                    return;
+                }
+                connectionStage = "association";
+                logConnect("available");
+                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.REQUEST_COMPLETED, "request");
+                recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_AVAILABLE, "association");
+                if (Boolean.TRUE.equals(pendingAutoRouteTraffic) && !bindConnectNetwork(generation, network)) {
+                    return;
+                }
+                startSsidVerification(generation, network, ssid, true);
+            });
+        }
+
+        @Override
+        public void onCapabilitiesChanged(@NonNull Network network, @NonNull NetworkCapabilities capabilities) {
+            connectHandler.post(() -> {
+                if (
+                    !isCurrentConnectAttempt(generation) ||
+                    connectionState == null ||
+                    connectionState.isReleased() ||
+                    expireConnectIfNeeded(generation)
+                ) {
+                    return;
+                }
+                TransportInfo transport = capabilities.getTransportInfo();
+                String currentSsid = transport instanceof WifiInfo ? ((WifiInfo) transport).getSSID() : null;
+                if (connectionState.onCapabilities(network, currentSsid)) {
+                    recordNativeDiagnostic(
+                        WifiConnectionDiagnostics.EventType.CAPABILITIES_CHANGED,
+                        isPendingConnectAttempt(generation) ? "verification" : "connected"
+                    );
+                    // Use the supplied capabilities: getNetworkCapabilities() redacts SSIDs.
+                    if (ssidMatches(ssid, network) && isPendingConnectAttempt(generation)) {
+                        completeConnectSuccess(generation, network, true);
+                    }
+                    observeConnectionIp(nativeDiagnostics, network);
+                }
+            });
+        }
+
+        @Override
+        public void onLinkPropertiesChanged(@NonNull Network network, @NonNull LinkProperties properties) {
+            connectHandler.post(() -> {
+                if (
+                    isCurrentConnectAttempt(generation) &&
+                    connectionState != null &&
+                    !connectionState.isReleased() &&
+                    network.equals(connectionState.getNetwork())
+                ) {
+                    observeLinkProperties(nativeDiagnostics, properties);
+                }
+            });
+        }
+
+        @Override
+        public void onUnavailable() {
+            connectHandler.post(() -> {
+                if (isPendingConnectAttempt(generation)) {
+                    // A detailed failure listener may run first; otherwise settle generically.
+                    completeConnectFailure(
+                        generation,
+                        "CONNECTION_FAILED",
+                        "Failed to connect to network.",
+                        "association",
+                        null,
+                        null,
+                        true
+                    );
+                }
+            });
+        }
+
+        @Override
+        public void onLost(@NonNull Network network) {
+            connectHandler.post(() -> {
+                if (!isCurrentConnectAttempt(generation) || connectionState == null || !network.equals(connectionState.getNetwork())) {
+                    return;
+                }
+                if (isPendingConnectAttempt(generation)) {
+                    completeConnectFailure(
+                        generation,
+                        "CONNECTION_FAILED",
+                        "Requested Wi-Fi network was lost.",
+                        connectionStage,
+                        null,
+                        null,
+                        true
+                    );
+                } else {
+                    logConnect("lost");
+                    recordNativeDiagnostic(WifiConnectionDiagnostics.EventType.NETWORK_LOST, "cleanup");
+                    releaseConnection();
+                }
+            });
+        }
+    }
+
+    private boolean bindConnectNetwork(int generation, Network network) {
+        if (!isPendingConnectAttempt(generation) || expireConnectIfNeeded(generation)) {
+            return false;
+        }
+        try {
+            bindingSucceeded = processBinding.bind(network);
+            logConnect("binding:" + bindingSucceeded);
+            if (nativeDiagnostics != null) {
+                nativeDiagnostics.binding(bindingSucceeded, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
+            if (bindingSucceeded) {
+                return true;
+            }
+        } catch (Exception e) {
+            bindingSucceeded = false;
+            logConnect("binding:false");
+            if (nativeDiagnostics != null) {
+                nativeDiagnostics.binding(false, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
+        }
+        completeConnectFailure(
+            generation,
+            "CONNECTION_FAILED",
+            "Failed to route app traffic through the requested Wi-Fi network.",
+            "routing",
+            null,
+            null,
+            true
+        );
+        return false;
+    }
+
+    private boolean releaseConnection() {
+        clearConnectTimeout();
+        clearSsidVerification();
+        removeLocalOnlyFailureListener();
+        if (connectionState != null) {
+            connectionState.release();
+        }
+        boolean released = localOnlyFailureListener == null;
+        if (processBinding != null) {
+            try {
+                released = processBinding.release() && released;
+            } catch (Exception e) {
+                released = false;
+            }
+        }
+        if (networkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+                networkCallback = null;
+            } catch (IllegalArgumentException ignored) {
+                // Callback already unregistered by Android.
+                networkCallback = null;
+            } catch (Exception e) {
+                released = false;
+                logConnect("callback-cleanup-failed");
+            }
+        }
+        if (connectionState != null) {
+            logConnect("cleanup:" + released);
+            if (nativeDiagnostics != null) {
+                nativeDiagnostics.cleanup(released, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
+        }
+        return released;
+    }
+
+    private void logConnect(String event) {
+        android.util.Log.d(
+            "CapacitorWifi",
+            "connect attempt=" +
+                (nativeDiagnostics == null ? connectGeneration : nativeDiagnostics.id) +
+                " elapsedMs=" +
+                (SystemClock.elapsedRealtime() - connectStartedAt) +
+                " event=" +
+                event
+        );
     }
 
     private void rejectConnect(
@@ -1383,6 +1671,19 @@ public class CapacitorWifiPlugin extends Plugin {
         data.put("platform", "android");
         data.put("androidApiLevel", Build.VERSION.SDK_INT);
         data.put("connectionStage", stage);
+        if (lastDiagnostics != null && call.getCallbackId().equals(diagnosticCallId)) {
+            data.put("attemptId", lastDiagnostics.id);
+            if (lastDiagnostics.isPending()) {
+                lastDiagnostics.fail(code, stage, nativeCode, false, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            }
+        }
+        if (connectionState != null && call.getCallbackId().equals(attemptedCallId)) {
+            data.put("ssidVerification", ssidVerification.name().toLowerCase(java.util.Locale.ROOT));
+            data.put("elapsedMs", SystemClock.elapsedRealtime() - connectStartedAt);
+            if (bindingSucceeded != null) {
+                data.put("bindingSucceeded", bindingSucceeded);
+            }
+        }
         if (nativeCode != null) {
             data.put("nativeCode", nativeCode);
         }
@@ -1390,6 +1691,54 @@ public class CapacitorWifiPlugin extends Plugin {
             data.put("nativeMessage", nativeMessage);
         }
         call.reject(message, code, data);
+    }
+
+    private void recordNativeDiagnostic(WifiConnectionDiagnostics.EventType type, String stage) {
+        if (nativeDiagnostics != null) {
+            nativeDiagnostics.record(type, stage, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+        }
+    }
+
+    private void observeConnectionIp(WifiConnectionDiagnostics diagnostic, @Nullable Network network) {
+        if (diagnostic == null) {
+            return;
+        }
+        if (diagnostic != nativeDiagnostics || connectionState == null || connectionState.isReleased()) {
+            diagnostic.observeIp("unknown", System.currentTimeMillis(), SystemClock.elapsedRealtime());
+            return;
+        }
+        try {
+            if (network == null) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && connectionState.expectedSsid().equals(getLegacySsid())) {
+                    network = getOnlyWifiNetwork();
+                }
+                if (network == null) {
+                    diagnostic.observeIp("unknown", System.currentTimeMillis(), SystemClock.elapsedRealtime());
+                    return;
+                }
+            }
+            observeLinkProperties(diagnostic, network == null ? null : connectivityManager.getLinkProperties(network));
+        } catch (Exception e) {
+            diagnostic.observeIp("unknown", System.currentTimeMillis(), SystemClock.elapsedRealtime());
+        }
+    }
+
+    private void observeLinkProperties(WifiConnectionDiagnostics diagnostic, @Nullable LinkProperties properties) {
+        if (diagnostic == null) {
+            return;
+        }
+        List<InetAddress> addresses = null;
+        if (properties != null) {
+            addresses = new ArrayList<>();
+            for (LinkAddress address : properties.getLinkAddresses()) {
+                addresses.add(address.getAddress());
+            }
+        }
+        diagnostic.observeIp(
+            WifiConnectionDiagnostics.classifyAddresses(addresses),
+            System.currentTimeMillis(),
+            SystemClock.elapsedRealtime()
+        );
     }
 
     private void clearConnectTimeout() {
@@ -1410,10 +1759,13 @@ public class CapacitorWifiPlugin extends Plugin {
         if (localOnlyFailureListener != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             try {
                 wifiManager.removeLocalOnlyConnectionFailureListener(localOnlyFailureListener);
-            } catch (Exception ignored) {
+                localOnlyFailureListener = null;
+            } catch (IllegalArgumentException ignored) {
                 // already removed
+                localOnlyFailureListener = null;
+            } catch (Exception e) {
+                logConnect("failure-listener-cleanup-failed");
             }
-            localOnlyFailureListener = null;
         }
     }
 }
