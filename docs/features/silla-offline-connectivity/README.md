@@ -6,13 +6,13 @@ Make Silla's connection to an EV charger's offline Wi-Fi reliable, explainable, 
 
 ## Status
 
-Lifecycle: Implementation
+Lifecycle: Implementation; plugin-side S3 increment ready for integration testing
 
-Current work: M1 Android and M2 iOS accepted; owner authorized continued S3 plugin diagnostics/readiness implementation
+Current work: M1 Android and M2 iOS accepted; plugin-side S3 diagnostics/readiness implementation and hardening are complete in this checkout; device validation and Silla-app integration are next
 
-Last updated: 2026-10-12
+Last updated: 2026-10-13
 
-The owner reports having tested M1 and M2 thoroughly and accepts both milestones on 2026-10-12. Per-scenario device/build records were not included in this update and remain to be captured if available. On 2026-10-12 the owner also directed continued S3 implementation, beginning with plugin-side diagnostic lifecycle accuracy and readiness observations (D-009). Commit `b818e85` supplies the initial diagnostics/API baseline; S3 integration, review, and acceptance remain outstanding.
+The owner reports having tested M1 and M2 thoroughly and accepts both milestones on 2026-10-12. Per-scenario device/build records were not included in this update and remain to be captured if available. On 2026-10-12 the owner directed S3 plugin-side diagnostics/readiness implementation (D-009). That implementation and source-level hardening are complete in the current checkout; Android build/tests and Web/API build pass. S3 physical-device validation, iOS test/native compilation, Silla-app integration, and final owner acceptance remain outstanding.
 
 ## Owner
 
@@ -76,7 +76,8 @@ Owner exception: phone reviews may be batched across milestones and development 
 
 - Detailed M1/M2 device/build records were not supplied with the 2026-10-12 acceptance; capture them retrospectively if available. This does not change the owner's acceptance.
 - Full native iOS compilation/SwiftLint requires macOS/Xcode; Linux policy tests and syntax parsing do not replace it.
-- S3 plugin-side diagnostics work is implemented in the current worktree; API docs, Android tests/build, Web build, and lint pass. iOS policy tests/native build need Swift/macOS; device-level snapshot, cleanup, routing, and charger-service checks remain. Silla-side service readiness and error-preservation work requires the separate app repository.
+- S3 plugin-side diagnostics work is implemented in the current worktree; API docs, Android build/tests, Web build, and ESLint pass. iOS policy tests/native build need Swift/macOS; device-level snapshot, cleanup, routing, and charger-service checks remain. Silla-side service readiness and error-preservation work requires the separate app repository.
+- Android `timeoutMs` retains its pre-existing positive-integer range; the accidental 600000 ms Android ceiling was removed. The 600000 ms limit remains documented and enforced for iOS.
 
 ## Pause or Cancellation Record
 

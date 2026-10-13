@@ -74,7 +74,6 @@ public class CapacitorWifiPlugin extends Plugin {
     private static final String EXTRA_WIFI_PRE_SHARED_KEY = "wifi_psk";
     private static final int WIFI_SECURITY_WPA_PSK = 2;
     private static final int DEFAULT_CONNECT_TIMEOUT_MS = 30000;
-    private static final int MAX_CONNECT_TIMEOUT_MS = 600000;
     private static final long SSID_VERIFY_POLL_MS = 500;
 
     // Connection methods, callbacks, timers, and cleanup all run on this handler.
@@ -336,12 +335,7 @@ public class CapacitorWifiPlugin extends Plugin {
 
         Integer timeoutMs = resolveTimeoutMs(call);
         if (timeoutMs == null) {
-            rejectConnectAndClear(
-                call,
-                "INVALID_CONFIGURATION",
-                "timeoutMs must be a positive number no greater than 600000.",
-                "validation"
-            );
+            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive integer.", "validation");
             return;
         }
 
@@ -464,12 +458,7 @@ public class CapacitorWifiPlugin extends Plugin {
 
         Integer timeoutMs = resolveTimeoutMs(call);
         if (timeoutMs == null) {
-            rejectConnectAndClear(
-                call,
-                "INVALID_CONFIGURATION",
-                "timeoutMs must be a positive number no greater than 600000.",
-                "validation"
-            );
+            rejectConnectAndClear(call, "INVALID_CONFIGURATION", "timeoutMs must be a positive integer.", "validation");
             return;
         }
 
@@ -1149,7 +1138,7 @@ public class CapacitorWifiPlugin extends Plugin {
             return DEFAULT_CONNECT_TIMEOUT_MS;
         }
         Integer timeoutMs = call.getInt("timeoutMs");
-        if (timeoutMs == null || timeoutMs <= 0 || timeoutMs > MAX_CONNECT_TIMEOUT_MS) {
+        if (!WifiConnectionState.isValidTimeout(timeoutMs)) {
             return null;
         }
         return timeoutMs;

@@ -1,6 +1,6 @@
 # Requirements
 
-Status: M1/M2 were accepted by the owner on 2026-10-12 after the owner reports thorough testing. Per-scenario device evidence is not recorded in this dossier. S3 work remains partial and unaccepted; requirements outside M1/M2 remain proposed.
+Status: M1/M2 were accepted by the owner on 2026-10-12 after the owner reports thorough testing. Plugin-side S3 diagnostics/readiness implementation is complete in this checkout, with device and Silla-app verification outstanding; S3 remains unaccepted. Requirements outside M1/M2 and S3 remain proposed.
 
 ## Scope and User Workflows
 
@@ -8,7 +8,7 @@ Connect to offline charger Wi-Fi, establish local communication, recover from fa
 
 ## Functional Requirements
 
-Every row states an observable requirement and its acceptance criterion. M1 covers FR-001–FR-008; M2 covers FR-009–FR-011. Both include initial FR-015–FR-016 diagnostics and applicable QR-001–QR-005. Commit `b818e85` begins partial S3 plugin diagnostics/readiness work for FR-013 and FR-015–FR-017. On 2026-10-12 the owner authorized continuing this plugin-side implementation increment; verification and acceptance remain pending. Broader S3 diagnostic/service integration, complete release controls, additional iOS changes, and remaining Silla-app deliverables are incomplete or future scope.
+Every row states an observable requirement and its acceptance criterion. M1 covers FR-001–FR-008; M2 covers FR-009–FR-011. Both include initial FR-015–FR-016 diagnostics and applicable QR-001–QR-005. The plugin-side S3 increment for FR-013 and FR-015–FR-017 is implemented; Android/Web verification passes, while iOS execution, device verification, and Silla-app integration remain pending. Broader S3 service integration, complete release controls, additional iOS changes, and remaining Silla-app deliverables are incomplete or future scope.
 
 | ID | Priority | Requirement | Acceptance criterion | Owner |
 | --- | --- | --- | --- | --- |

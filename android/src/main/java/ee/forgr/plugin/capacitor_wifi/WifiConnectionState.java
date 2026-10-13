@@ -102,4 +102,8 @@ final class WifiConnectionState<N> {
         }
         return value == null || value.isEmpty() || "<unknown ssid>".equalsIgnoreCase(value) ? null : value;
     }
+
+    static boolean isValidTimeout(Integer timeoutMs) {
+        return timeoutMs != null && timeoutMs > 0;
+    }
 }

@@ -1,6 +1,6 @@
 # Implementation Plan
 
-Status: M1 Android and M2 iOS were accepted by the owner on 2026-10-12. The owner authorized continued plugin-side S3 diagnostics/readiness implementation on 2026-10-12; commit `b818e85` is its initial baseline. S3 completion and later delivery slices remain pending.
+Status: M1 Android and M2 iOS were accepted by the owner on 2026-10-12. Plugin-side S3 diagnostics/readiness implementation and source-level hardening are complete in this checkout. Device validation, iOS native checks, Silla-app integration, and S3 acceptance remain pending.
 
 ## Initiative Coordination
 
@@ -136,7 +136,7 @@ Commit `b818e85` (`backup`, 2026-10-11) began the plugin-owned diagnostics/readi
 - [x] Verify source-level cleanup/event paths for Android modern, Android legacy, and iOS; terminal outcome remains historical after cleanup and late iOS removal does not override a newer target.
 - [ ] Obtain Android/iOS device evidence for cleanup events, IP observations, routing and cross-platform event parity.
 - [x] Review diagnostic model terminal outcome and bounded-history consistency; make iOS snapshots copy event history and nested error fields like Android, with mutation-isolation test coverage.
-- [ ] Review observation freshness/target changes, cleanup API guarantees, and Android timeout-cap compatibility on devices; address findings.
+- [x] Review observation freshness/target changes, cleanup API guarantees, and Android timeout compatibility; restore the prior positive-integer timeout range and add regression coverage.
 - [ ] Complete native iOS compilation/SwiftLint on macOS and signed-device verification; test snapshots for pending, success, failure, cancellation, disconnect, stale observations, and target changes.
 - [ ] Agree S3 scope/acceptance with owner; integrate Silla-side service probes, error metadata/last-meaningful-failure handling, requested-identity cleanup, and cloud-independent local operations in the Silla app repository.
 - [ ] Complete V-008/V-009 and relevant V-010 device/app checks; perform owner review, hardening, final validation, and only then update acceptance status.
@@ -145,7 +145,7 @@ Commit `b818e85` (`backup`, 2026-10-11) began the plugin-owned diagnostics/readi
 
 The plugin snapshot reports historical `connect()` outcome and observed network/IP signals; it does not guarantee route health, internet access, or charger-service readiness. The current changes do not implement a complete request/association/routing/IP/service milestone model, nor a plugin-side support-export workflow in Silla. Silla remains responsible for health/login/WebSocket probes and localized recovery. S3 also requires verifying preservation of error metadata and meaningful last failures in the app, cleanup by requested charger identity, and keeping local operations independent from cloud availability (FR-012–FR-017, FR-022–FR-024). Those app changes require the separate Silla repository.
 
-S3 plugin diagnostics increment authorized by owner direction on 2026-10-12. The lifecycle-event checkpoint is owner-approved under D-010; timeout/permission distinction, public contract alignment, early-attempt attribution review, bounded iOS refresh guards, defensive snapshot copies, legacy event timing, and unknown-versus-missing IP classification pass available Android/Web checks. iOS policy tests/native compilation, end-to-end device review, Silla integration, and final S3 acceptance remain pending. The batched device-validation exception permits combined review; it does not mark those requirements verified.
+S3 plugin diagnostics increment authorized by owner direction on 2026-10-12. The lifecycle-event checkpoint is owner-approved under D-010; timeout/permission distinction, public contract alignment, early-attempt attribution review, bounded iOS refresh guards, defensive snapshot copies, legacy event timing, unknown-versus-missing IP classification, and Android timeout compatibility hardening are implemented. Android build/tests, Web/API build, and ESLint pass. iOS policy tests/native compilation, end-to-end device review, Silla integration, and final S3 acceptance remain pending. The batched device-validation exception permits combined review; it does not mark those requirements verified.
 
 ## Validation Per Slice
 
@@ -167,7 +167,7 @@ For every milestone:
 6. Consolidate delivered specifications and evidence; verify API contract changes are documented in `src/definitions.ts` and the regenerated root README API sections, with relevant handwritten guidance/examples updated.
 7. Obtain final owner validation and definitive acceptance; synchronize README and decisions.
 
-M1 and M2 are accepted by the owner as of 2026-10-12. The authorized plugin-side S3 diagnostics increment is implemented in the current worktree; Android/Web builds, Android JUnit suite, API docs, formatting, and lint pass on 2026-10-12. Remaining S3 gates are iOS tests/native build, device validation, Silla app integration, whole-slice review/hardening, and final acceptance. No later slice has definitive acceptance.
+M1 and M2 are accepted by the owner as of 2026-10-12. The authorized plugin-side S3 diagnostics increment and source-level hardening are implemented; Android debug/release builds and JUnit tests, Web/API build, ESLint, and generated docs pass on 2026-10-13. Remaining S3 gates are iOS tests/native build, device validation, Silla-app integration, app/device review, and final acceptance. No later slice has definitive acceptance.
 
 ## Plan Review Checklist
 

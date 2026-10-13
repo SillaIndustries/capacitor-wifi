@@ -483,7 +483,8 @@ export interface ConnectOptions {
   /**
    * Maximum time in milliseconds to wait for confirmation that the device is associated
    * with the requested SSID before rejecting with `CONNECTION_TIMEOUT`.
-   * Must be a positive number no greater than 600000 ms when provided.
+   * Must be positive when provided. Android accepts positive integer milliseconds (up to
+   * the platform's signed 32-bit timeout range); iOS accepts finite positive values up to 600000 ms.
    * On Android, the budget starts after location authorization and before the native
    * Wi-Fi request, so time spent in the system Wi-Fi consent dialog counts toward it.
    * On Android 10+, a timeout releases the temporary request and plugin-owned process binding.

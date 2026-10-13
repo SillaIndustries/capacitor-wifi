@@ -117,4 +117,13 @@ public class WifiConnectionStateTest {
         assertTrue(replacement.isPending());
         assertEquals(WifiConnectionState.Verification.UNAVAILABLE, replacement.verify(null, null));
     }
+
+    @Test
+    public void positiveAndroidTimeoutsKeepTheExistingIntegerRange() {
+        assertFalse(WifiConnectionState.isValidTimeout(null));
+        assertFalse(WifiConnectionState.isValidTimeout(0));
+        assertFalse(WifiConnectionState.isValidTimeout(-1));
+        assertTrue(WifiConnectionState.isValidTimeout(600_001));
+        assertTrue(WifiConnectionState.isValidTimeout(Integer.MAX_VALUE));
+    }
 }
