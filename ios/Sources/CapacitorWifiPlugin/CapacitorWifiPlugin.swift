@@ -548,7 +548,10 @@ public class CapacitorWifiPlugin: CAPPlugin, CAPBridgedPlugin, CLLocationManager
             "eventLimit": WifiConnectionDiagnostics.eventLimit, "droppedEventCount": 0, "events": []
         ]
         if let diagnostic = lastDiagnostics {
-            result.merge(diagnostic.snapshot(elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)) { _, value in value }
+            let snapshot = diagnostic.snapshot(elapsedClock: ProcessInfo.processInfo.systemUptime * 1000)
+            if let jsSnapshot = JSTypes.coerceDictionaryToJSObject(snapshot as NSDictionary) {
+                result.merge(jsSnapshot) { _, value in value }
+            }
         }
         call.resolve(result)
     }
