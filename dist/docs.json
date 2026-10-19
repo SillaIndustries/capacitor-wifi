@@ -1,0 +1,1682 @@
+{
+  "api": {
+    "name": "CapacitorWifiPlugin",
+    "slug": "capacitorwifiplugin",
+    "docs": "WiFi plugin for managing device WiFi connectivity",
+    "tags": [
+      {
+        "text": "7.0.0",
+        "name": "since"
+      }
+    ],
+    "methods": [
+      {
+        "name": "addNetwork",
+        "signature": "(options: AddNetworkOptions) => Promise<void>",
+        "parameters": [
+          {
+            "name": "options",
+            "docs": "- Network configuration options",
+            "type": "AddNetworkOptions"
+          }
+        ],
+        "returns": "Promise<void>",
+        "tags": [
+          {
+            "name": "param",
+            "text": "options - Network configuration options"
+          },
+          {
+            "name": "returns",
+            "text": "Promise that resolves when the network is added"
+          },
+          {
+            "name": "throws",
+            "text": "Error if adding the network fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nawait CapacitorWifi.addNetwork({\n  ssid: 'MyNetwork',\n  password: 'mypassword',\n  isHiddenSsid: false,\n  securityType: NetworkSecurityType.WPA2_PSK\n});\n```"
+          }
+        ],
+        "docs": "Show a system dialog to add a Wi-Fi network to the device.\nOn Android SDK 30+, this opens the system Wi-Fi settings with the network pre-filled.\nOn iOS, this connects to the network directly.",
+        "complexTypes": [
+          "AddNetworkOptions"
+        ],
+        "slug": "addnetwork"
+      },
+      {
+        "name": "connect",
+        "signature": "(options: ConnectOptions) => Promise<void>",
+        "parameters": [
+          {
+            "name": "options",
+            "docs": "- Connection options",
+            "type": "ConnectOptions"
+          }
+        ],
+        "returns": "Promise<void>",
+        "tags": [
+          {
+            "name": "param",
+            "text": "options - Connection options"
+          },
+          {
+            "name": "returns",
+            "text": "Promise that resolves when connected"
+          },
+          {
+            "name": "throws",
+            "text": "CapacitorException with `code` from {@link WifiConnectionErrorCode}"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\ntry {\n  await CapacitorWifi.connect({\n    ssid: 'MyNetwork',\n    password: 'mypassword',\n    autoRouteTraffic: true, // Android only\n    timeoutMs: 30000,\n  });\n} catch (error: any) {\n  switch (error.code) {\n    case WifiConnectionErrorCode.WIFI_DISABLED:\n      // Ask the user to enable Wi-Fi\n      break;\n    case WifiConnectionErrorCode.PERMISSION_DENIED:\n      // Request the required permission\n      break;\n    default:\n      // Generic connection error\n      break;\n  }\n}\n```"
+          }
+        ],
+        "docs": "Connect to a Wi-Fi network.\nOn Android, this creates a temporary connection that doesn't route traffic through the network by default.\nSet autoRouteTraffic to true to bind app traffic to the connected network (useful for local/device-hosted APs).\nFor a persistent connection on Android, use addNetwork() instead.\nOn iOS, this creates a persistent connection.\niOS allows requestTimeoutMs (default 120000) for the configuration request and system\nconsent prompt, then starts timeoutMs (default 30000) to confirm the requested SSID.\nA timeout/error keeps the persistent iOS configuration; the OS may finish joining later.\nUse disconnect() to cancel plugin verification and request configuration removal.\nThe plugin cannot cancel Apple's pending system operation or dismiss its prompt.\nAndroid 10+ requests do not require internet access, regardless of autoRouteTraffic.\nAndroid SSID verification requires precise location permission and enabled location services.\nOn Android 12+, verification uses location-inclusive callbacks for the requested network.\n\nResolves only after the device is confirmed associated with the requested SSID.\nOn Android, autoRouteTraffic: true also requires successful process binding;\na binding failure rejects with CONNECTION_FAILED. Association does not prove that\na charger or other local service is ready; check that service separately.\nSuccessful Android 10+ temporary connections are retained until disconnect(), replacement,\nnetwork loss, or plugin destruction. Failure/cancellation releases the request and\nany process binding still owned by the plugin.\nOn failure, rejects with a Capacitor error that includes a stable `code`\nfrom {@link WifiConnectionErrorCode}. Prefer `error.code` over parsing `error.message`.\nSpecific codes are returned only when the native OS provides that reason;\notherwise the plugin returns `CONNECTION_FAILED`.\nErrors from a started native attempt include optional data.ssidVerification\n('unavailable', 'mismatch', or 'match') and data.elapsedMs (Android excludes location authorization).\nOn iOS, SSID observation is included for verification-stage errors.\ndata.bindingSucceeded is Android-only and included when process binding was attempted.\ndata.connectionStage distinguishes request/association from verification deadlines;\nunavailable SSID information is not proof that the phone failed to join.\ndata.attemptId correlates a connection error with getConnectionDiagnostics().\nOn Android, callback processing rechecks the timeout deadline before binding or resolving.",
+        "complexTypes": [
+          "ConnectOptions"
+        ],
+        "slug": "connect"
+      },
+      {
+        "name": "getConnectionDiagnostics",
+        "signature": "() => Promise<WifiConnectionDiagnosticsSnapshot>",
+        "parameters": [],
+        "returns": "Promise<WifiConnectionDiagnosticsSnapshot>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "A bounded diagnostic report suitable for application support exports"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst diagnostics = await CapacitorWifi.getConnectionDiagnostics();\nconsole.log(diagnostics.attempt?.outcome, diagnostics.attempt?.ipReadiness);\n// Attach diagnostics to an app-controlled support report.\n```"
+          }
+        ],
+        "docs": "Get an identifier-free diagnostic snapshot of the latest accepted connection attempt.\nAvailable on Android and iOS; unsupported on Web. Concurrent connect() calls rejected\nwith CONNECTION_IN_PROGRESS do not replace the ongoing attempt's report.\nThe snapshot contains at most 64 recent events for that attempt, held only in memory.\nOlder events are counted by droppedEventCount; a new attempt replaces the report.\nBefore any attempt, attempt is absent and events is empty.\n\nThis method does not request permissions, change routing, reconnect, or probe a service.\nAndroid reads IP information for the requested network, not the cellular/default network.\niOS refreshes SSID/IP observations with a five-second lookup budget when a target is known;\nunavailable or superseded reads return unknown/cached observations, with sample timestamps.\nIP information is attributed to the iOS target only when its current SSID matches.\nWatchdog delivery can be delayed while the app cannot execute.\n\nThe outcome is the historical result of connect(), not a live connectivity guarantee.\nAn assigned IPv4 address does not prove a working route, internet, or charger-service readiness.\nIn particular, link-local-only addressing is not evidence of successful DHCP configuration.\nCheck local services separately in the application.\n\nReports omit SSIDs, BSSIDs, actual IP addresses, passwords, tokens, and raw native messages.\nError codes and numeric native reasons remain available without exporting localized text.",
+        "complexTypes": [
+          "WifiConnectionDiagnosticsSnapshot"
+        ],
+        "slug": "getconnectiondiagnostics"
+      },
+      {
+        "name": "disconnect",
+        "signature": "(options?: DisconnectOptions | undefined) => Promise<void>",
+        "parameters": [
+          {
+            "name": "options",
+            "docs": "- Optional disconnect options",
+            "type": "DisconnectOptions | undefined"
+          }
+        ],
+        "returns": "Promise<void>",
+        "tags": [
+          {
+            "name": "param",
+            "text": "options - Optional disconnect options"
+          },
+          {
+            "name": "returns",
+            "text": "Promise that resolves when disconnected"
+          },
+          {
+            "name": "throws",
+            "text": "Error if disconnection fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nawait CapacitorWifi.disconnect();\n```"
+          }
+        ],
+        "docs": "Disconnect from the current Wi-Fi network.\nOn iOS, only disconnects from networks that were added via this plugin.\nCancels a pending iOS connect() with CONNECTION_FAILED. An explicit SSID selects\nthe configuration to remove; otherwise iOS targets the pending or most recently\nrequested connection, falling back to the current SSID if no target is tracked.\nThat fallback lookup is bounded to 120000 ms and can reject with CONNECTION_TIMEOUT.\nLate native results cannot resolve a cancelled call or remove a newer request for\nthe same SSID. Saved networks owned by the user or another app cannot be removed.\nOn Android, cancels a pending connect() with CONNECTION_FAILED and releases the\nretained Wi-Fi request and any process binding still owned by the plugin.",
+        "complexTypes": [
+          "DisconnectOptions"
+        ],
+        "slug": "disconnect"
+      },
+      {
+        "name": "getAvailableNetworks",
+        "signature": "() => Promise<GetAvailableNetworksResult>",
+        "parameters": [],
+        "returns": "Promise<GetAvailableNetworksResult>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the list of networks"
+          },
+          {
+            "name": "throws",
+            "text": "Error if getting networks fails or on unsupported platform"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst { networks } = await CapacitorWifi.getAvailableNetworks();\nnetworks.forEach(network => {\n  console.log(`SSID: ${network.ssid}, Signal: ${network.rssi} dBm`);\n});\n```"
+          }
+        ],
+        "docs": "Get a list of available Wi-Fi networks from the last scan.\nOnly available on Android.",
+        "complexTypes": [
+          "GetAvailableNetworksResult"
+        ],
+        "slug": "getavailablenetworks"
+      },
+      {
+        "name": "getIpAddress",
+        "signature": "() => Promise<GetIpAddressResult>",
+        "parameters": [],
+        "returns": "Promise<GetIpAddressResult>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the IP address"
+          },
+          {
+            "name": "throws",
+            "text": "Error if getting IP address fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst { ipAddress } = await CapacitorWifi.getIpAddress();\nconsole.log('IP Address:', ipAddress);\n```"
+          }
+        ],
+        "docs": "Get the device's current IP address.\nAvailable on both Android and iOS.",
+        "complexTypes": [
+          "GetIpAddressResult"
+        ],
+        "slug": "getipaddress"
+      },
+      {
+        "name": "getRssi",
+        "signature": "() => Promise<GetRssiResult>",
+        "parameters": [],
+        "returns": "Promise<GetRssiResult>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the RSSI value"
+          },
+          {
+            "name": "throws",
+            "text": "Error if getting RSSI fails or on unsupported platform"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst { rssi } = await CapacitorWifi.getRssi();\nconsole.log('Signal strength:', rssi, 'dBm');\n```"
+          }
+        ],
+        "docs": "Get the received signal strength indicator (RSSI) of the current network in dBm.\nOnly available on Android.",
+        "complexTypes": [
+          "GetRssiResult"
+        ],
+        "slug": "getrssi"
+      },
+      {
+        "name": "getSsid",
+        "signature": "() => Promise<GetSsidResult>",
+        "parameters": [],
+        "returns": "Promise<GetSsidResult>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the SSID"
+          },
+          {
+            "name": "throws",
+            "text": "Error if getting SSID fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst { ssid } = await CapacitorWifi.getSsid();\nconsole.log('Connected to:', ssid);\n```"
+          }
+        ],
+        "docs": "Get the service set identifier (SSID) of the current network.\nAvailable on both Android and iOS.",
+        "complexTypes": [
+          "GetSsidResult"
+        ],
+        "slug": "getssid"
+      },
+      {
+        "name": "getWifiInfo",
+        "signature": "() => Promise<WifiInfo>",
+        "parameters": [],
+        "returns": "Promise<WifiInfo>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the WiFi information"
+          },
+          {
+            "name": "throws",
+            "text": "Error if getting WiFi info fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst info = await CapacitorWifi.getWifiInfo();\nconsole.log('Network:', info.ssid);\nconsole.log('BSSID:', info.bssid);\nconsole.log('IP:', info.ip);\nconsole.log('Frequency:', info.frequency, 'MHz');\nconsole.log('Speed:', info.linkSpeed, 'Mbps');\nconsole.log('Signal:', info.signalStrength);\n```"
+          }
+        ],
+        "docs": "Get comprehensive information about the currently connected WiFi network.\nThis method provides detailed network information including SSID, BSSID, IP address,\nfrequency, link speed, and signal strength in a single call.\nOn iOS, some fields may not be available and will be undefined.",
+        "complexTypes": [
+          "WifiInfo"
+        ],
+        "slug": "getwifiinfo"
+      },
+      {
+        "name": "isEnabled",
+        "signature": "() => Promise<IsEnabledResult>",
+        "parameters": [],
+        "returns": "Promise<IsEnabledResult>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the Wi-Fi enabled status"
+          },
+          {
+            "name": "throws",
+            "text": "Error if checking status fails or on unsupported platform"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst { enabled } = await CapacitorWifi.isEnabled();\nconsole.log('WiFi is', enabled ? 'enabled' : 'disabled');\n```"
+          }
+        ],
+        "docs": "Check if Wi-Fi is enabled on the device.\nOnly available on Android.",
+        "complexTypes": [
+          "IsEnabledResult"
+        ],
+        "slug": "isenabled"
+      },
+      {
+        "name": "startScan",
+        "signature": "() => Promise<void>",
+        "parameters": [],
+        "returns": "Promise<void>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves when scan starts"
+          },
+          {
+            "name": "throws",
+            "text": "Error if scan fails or on unsupported platform"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nawait CapacitorWifi.addListener('networksScanned', () => {\n  console.log('Scan completed');\n});\nawait CapacitorWifi.startScan();\n```"
+          }
+        ],
+        "docs": "Start scanning for Wi-Fi networks.\nOnly available on Android.\nResults are delivered via the 'networksScanned' event listener.\nNote: May fail due to system throttling or hardware issues.",
+        "complexTypes": [],
+        "slug": "startscan"
+      },
+      {
+        "name": "checkPermissions",
+        "signature": "() => Promise<PermissionStatus>",
+        "parameters": [],
+        "returns": "Promise<PermissionStatus>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the permission status"
+          },
+          {
+            "name": "throws",
+            "text": "Error if checking permissions fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst status = await CapacitorWifi.checkPermissions();\nconsole.log('Location permission:', status.location);\n```"
+          }
+        ],
+        "docs": "Check the current permission status for location access.\nLocation permission is required for Wi-Fi operations on both platforms.",
+        "complexTypes": [
+          "PermissionStatus"
+        ],
+        "slug": "checkpermissions"
+      },
+      {
+        "name": "requestPermissions",
+        "signature": "(options?: RequestPermissionsOptions | undefined) => Promise<PermissionStatus>",
+        "parameters": [
+          {
+            "name": "options",
+            "docs": "- Optional permission request options",
+            "type": "RequestPermissionsOptions | undefined"
+          }
+        ],
+        "returns": "Promise<PermissionStatus>",
+        "tags": [
+          {
+            "name": "param",
+            "text": "options - Optional permission request options"
+          },
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the updated permission status"
+          },
+          {
+            "name": "throws",
+            "text": "Error if requesting permissions fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst status = await CapacitorWifi.requestPermissions();\nif (status.location === 'granted') {\n  console.log('Permission granted');\n}\n```"
+          }
+        ],
+        "docs": "Request location permissions from the user.\nLocation permission is required for Wi-Fi operations on both platforms.",
+        "complexTypes": [
+          "PermissionStatus",
+          "RequestPermissionsOptions"
+        ],
+        "slug": "requestpermissions"
+      },
+      {
+        "name": "addListener",
+        "signature": "(eventName: 'networksScanned', listenerFunc: () => void) => Promise<PluginListenerHandle>",
+        "parameters": [
+          {
+            "name": "eventName",
+            "docs": "- The event name ('networksScanned')",
+            "type": "'networksScanned'"
+          },
+          {
+            "name": "listenerFunc",
+            "docs": "- The callback function to execute",
+            "type": "() => void"
+          }
+        ],
+        "returns": "Promise<PluginListenerHandle>",
+        "tags": [
+          {
+            "name": "param",
+            "text": "eventName - The event name ('networksScanned')"
+          },
+          {
+            "name": "param",
+            "text": "listenerFunc - The callback function to execute"
+          },
+          {
+            "name": "returns",
+            "text": "Promise that resolves with a listener handle"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst listener = await CapacitorWifi.addListener('networksScanned', async () => {\n  const { networks } = await CapacitorWifi.getAvailableNetworks();\n  console.log('Found networks:', networks);\n});\n```"
+          }
+        ],
+        "docs": "Add a listener for the 'networksScanned' event.\nOnly available on Android.\nThis event is fired when Wi-Fi scan results are available.",
+        "complexTypes": [
+          "PluginListenerHandle"
+        ],
+        "slug": "addlistenernetworksscanned-"
+      },
+      {
+        "name": "removeAllListeners",
+        "signature": "() => Promise<void>",
+        "parameters": [],
+        "returns": "Promise<void>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves when all listeners are removed"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nawait CapacitorWifi.removeAllListeners();\n```"
+          }
+        ],
+        "docs": "Remove all listeners for this plugin.",
+        "complexTypes": [],
+        "slug": "removealllisteners"
+      },
+      {
+        "name": "isNetworkSaved",
+        "signature": "(options: IsNetworkSavedOptions) => Promise<IsNetworkSavedResult>",
+        "parameters": [
+          {
+            "name": "options",
+            "docs": "- Options containing the SSID to check",
+            "type": "IsNetworkSavedOptions"
+          }
+        ],
+        "returns": "Promise<IsNetworkSavedResult>",
+        "tags": [
+          {
+            "name": "param",
+            "text": "options - Options containing the SSID to check"
+          },
+          {
+            "name": "returns",
+            "text": "Promise that resolves with whether the network is saved"
+          },
+          {
+            "name": "throws",
+            "text": "Error if the check fails"
+          },
+          {
+            "name": "since",
+            "text": "8.2.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst { isSaved } = await CapacitorWifi.isNetworkSaved({ ssid: 'MyNetwork' });\nif (isSaved) {\n  await CapacitorWifi.connect({ ssid: 'MyNetwork', password: 'mypassword' });\n} else {\n  await CapacitorWifi.addNetwork({ ssid: 'MyNetwork', password: 'mypassword' });\n}\n```"
+          }
+        ],
+        "docs": "Check whether a network with the given SSID has already been saved/configured by this app.\nOn Android SDK 30+, this checks the app's Wi-Fi network suggestions.\nOn older Android (including SDK 29), this checks the system's configured networks list.\nOn iOS, this checks the hotspot configurations managed by this app.\nUse this to decide whether to call addNetwork() (first time) or connect() (already saved).",
+        "complexTypes": [
+          "IsNetworkSavedResult",
+          "IsNetworkSavedOptions"
+        ],
+        "slug": "isnetworksaved"
+      },
+      {
+        "name": "shareNetwork",
+        "signature": "(options?: ShareNetworkOptions | undefined) => Promise<ShareNetworkResult>",
+        "parameters": [
+          {
+            "name": "options",
+            "docs": "- Sharing options",
+            "type": "ShareNetworkOptions | undefined"
+          }
+        ],
+        "returns": "Promise<ShareNetworkResult>",
+        "tags": [
+          {
+            "name": "param",
+            "text": "options - Sharing options"
+          },
+          {
+            "name": "returns",
+            "text": "Promise that resolves when the sharing flow starts or completes"
+          },
+          {
+            "name": "throws",
+            "text": "Error if sharing is unavailable or fails"
+          },
+          {
+            "name": "since",
+            "text": "8.4.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\n// Android: provision credentials to an IoT device via DPP URI\nawait CapacitorWifi.shareNetwork({ dppUri: 'DPP:...' });\n\n// Android: show system UI to share the current network\nawait CapacitorWifi.shareNetwork();\n\n// iOS: share with a paired Bluetooth accessory\nawait CapacitorWifi.shareNetwork({\n  bluetoothIdentifier: accessory.bluetoothIdentifier,\n  requestAuthorization: true,\n  askToShare: true,\n});\n```"
+          }
+        ],
+        "docs": "Share Wi-Fi network credentials using platform-native sharing flows.\n\nOn Android 10+, this uses Wi-Fi Easy Connect (DPP). When `dppUri` is provided, the system\nprovisions credentials to the target device. Otherwise, it opens the system UI to share the\ncurrent or specified network (optionally via QR code when `ssid` and `password` are provided).\n\nOn iOS 26.2+, this uses the Wi-Fi Infrastructure framework with a paired AccessorySetupKit\naccessory. The host app must pair the accessory first and pass its `bluetoothIdentifier` or\n`accessoryIdentifier`. The app also needs the `com.apple.developer.wifi-infrastructure` entitlement.",
+        "complexTypes": [
+          "ShareNetworkResult",
+          "ShareNetworkOptions"
+        ],
+        "slug": "sharenetwork"
+      },
+      {
+        "name": "getPluginVersion",
+        "signature": "() => Promise<{ version: string; }>",
+        "parameters": [],
+        "returns": "Promise<{ version: string; }>",
+        "tags": [
+          {
+            "name": "returns",
+            "text": "Promise that resolves with the plugin version"
+          },
+          {
+            "name": "throws",
+            "text": "Error if getting the version fails"
+          },
+          {
+            "name": "since",
+            "text": "7.0.0"
+          },
+          {
+            "name": "example",
+            "text": "```typescript\nconst { version } = await CapacitorWifi.getPluginVersion();\nconsole.log('Plugin version:', version);\n```"
+          }
+        ],
+        "docs": "Get the native plugin version.",
+        "complexTypes": [],
+        "slug": "getpluginversion"
+      }
+    ],
+    "properties": []
+  },
+  "interfaces": [
+    {
+      "name": "AddNetworkOptions",
+      "slug": "addnetworkoptions",
+      "docs": "Options for adding a network",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The SSID of the network to add",
+          "complexTypes": [],
+          "type": "string"
+        },
+        {
+          "name": "password",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The password for the network (optional for open networks)",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "isHiddenSsid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            },
+            {
+              "text": "false",
+              "name": "default"
+            }
+          ],
+          "docs": "Whether the network is hidden (Android only)",
+          "complexTypes": [],
+          "type": "boolean | undefined"
+        },
+        {
+          "name": "securityType",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            },
+            {
+              "text": "NetworkSecurityType.WPA2_PSK",
+              "name": "default"
+            }
+          ],
+          "docs": "The security type of the network (Android only)",
+          "complexTypes": [
+            "NetworkSecurityType"
+          ],
+          "type": "NetworkSecurityType"
+        }
+      ]
+    },
+    {
+      "name": "ConnectOptions",
+      "slug": "connectoptions",
+      "docs": "Options for connecting to a network",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The SSID of the network to connect to",
+          "complexTypes": [],
+          "type": "string"
+        },
+        {
+          "name": "password",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The password for the network (optional for open networks)",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "isHiddenSsid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            },
+            {
+              "text": "false",
+              "name": "default"
+            }
+          ],
+          "docs": "Whether the network is hidden (Android only)",
+          "complexTypes": [],
+          "type": "boolean | undefined"
+        },
+        {
+          "name": "autoRouteTraffic",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            },
+            {
+              "text": "false",
+              "name": "default"
+            }
+          ],
+          "docs": "Whether to automatically route app traffic through the connected Wi-Fi network (Android only)\nWhen enabled, it binds the app process to the connected network using ConnectivityManager.bindProcessToNetwork()\nThis is useful for connecting to local/device-hosted APs (e.g., ESP32, IoT devices) that don't have internet access.\nDoes not require the Wi-Fi network to provide internet access. If process binding\nfails, connect() rejects with CONNECTION_FAILED and data.bindingSucceeded is false.\nWhile bound to an offline AP, app cloud requests may fail even if cellular is available.\nDisconnect or replace the connection to release the plugin-owned routing.",
+          "complexTypes": [],
+          "type": "boolean | undefined"
+        },
+        {
+          "name": "timeoutMs",
+          "tags": [
+            {
+              "text": "8.5.0",
+              "name": "since"
+            },
+            {
+              "text": "30000",
+              "name": "default"
+            }
+          ],
+          "docs": "Maximum time in milliseconds to wait for confirmation that the device is associated\nwith the requested SSID before rejecting with `CONNECTION_TIMEOUT`.\nMust be positive when provided. Android accepts positive integer milliseconds (up to\nthe platform's signed 32-bit timeout range); iOS accepts finite positive values up to 600000 ms.\nOn Android, the budget starts after location authorization and before the native\nWi-Fi request, so time spent in the system Wi-Fi consent dialog counts toward it.\nOn Android 10+, a timeout releases the temporary request and plugin-owned process binding.\nOn iOS, this is a separate verification budget starting after the configuration\nrequest succeeds (or reports alreadyAssociated); system consent uses requestTimeoutMs.\niOS accepts finite positive values up to 600000 ms and retains configuration on timeout.\nNative watchdogs run when the app can execute; background suspension can delay delivery.",
+          "complexTypes": [],
+          "type": "number | undefined"
+        },
+        {
+          "name": "requestTimeoutMs",
+          "tags": [
+            {
+              "text": "120000",
+              "name": "default"
+            }
+          ],
+          "docs": "Maximum time in milliseconds for the iOS hotspot configuration request to complete,\nincluding the system consent prompt. iOS only; ignored on Android and Web.\nAfter success/alreadyAssociated, timeoutMs provides a separate SSID verification budget.\nMust be a finite positive number no greater than 600000 when provided on iOS.\nExpiry rejects with CONNECTION_TIMEOUT and data.connectionStage: 'request', retaining\nthe persistent configuration. Apple's operation can complete after the plugin times out.\nWatchdog delivery can be delayed while the app is suspended.",
+          "complexTypes": [],
+          "type": "number | undefined"
+        }
+      ]
+    },
+    {
+      "name": "WifiConnectionDiagnosticsSnapshot",
+      "slug": "wificonnectiondiagnosticssnapshot",
+      "docs": "In-memory diagnostic report for the latest accepted plugin connection attempt.",
+      "tags": [],
+      "methods": [],
+      "properties": [
+        {
+          "name": "platform",
+          "tags": [],
+          "docs": "Native platform producing the report.",
+          "complexTypes": [],
+          "type": "'android' | 'ios'"
+        },
+        {
+          "name": "pluginVersion",
+          "tags": [],
+          "docs": "Native plugin version; record the fork commit/build identity separately.",
+          "complexTypes": [],
+          "type": "string"
+        },
+        {
+          "name": "capturedAt",
+          "tags": [],
+          "docs": "Unix epoch milliseconds when the snapshot was produced.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "eventLimit",
+          "tags": [],
+          "docs": "Maximum retained events per attempt; currently 64.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "droppedEventCount",
+          "tags": [],
+          "docs": "Number of events discarded from the beginning of this attempt's history.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "attempt",
+          "tags": [],
+          "docs": "Absent before the first accepted attempt.",
+          "complexTypes": [
+            "WifiDiagnosticAttempt"
+          ],
+          "type": "WifiDiagnosticAttempt"
+        },
+        {
+          "name": "events",
+          "tags": [],
+          "docs": "Retained events in sequence order. No disk persistence or unlimited history.",
+          "complexTypes": [
+            "WifiDiagnosticEvent"
+          ],
+          "type": "WifiDiagnosticEvent[]"
+        }
+      ]
+    },
+    {
+      "name": "WifiDiagnosticAttempt",
+      "slug": "wifidiagnosticattempt",
+      "docs": "Latest connection attempt's diagnostic state.",
+      "tags": [],
+      "methods": [],
+      "properties": [
+        {
+          "name": "id",
+          "tags": [],
+          "docs": "Session-local identifier. Does not identify a physical network.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "startedAt",
+          "tags": [],
+          "docs": "Unix epoch milliseconds when the plugin reserved the attempt.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "updatedAt",
+          "tags": [],
+          "docs": "Unix epoch milliseconds of the most recent diagnostic update.",
+          "complexTypes": [],
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "name": "WifiDiagnosticEvent",
+      "slug": "wifidiagnosticevent",
+      "docs": "A chronological event with the diagnostic state observed at that point.",
+      "tags": [],
+      "methods": [],
+      "properties": [
+        {
+          "name": "attemptId",
+          "tags": [],
+          "docs": "Session-local attempt identifier.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "sequence",
+          "tags": [],
+          "docs": "Increasing sequence within the attempt; missing earlier numbers indicate dropped events.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "timestamp",
+          "tags": [],
+          "docs": "Unix epoch milliseconds. Use sequence/elapsedMs for ordering if the wall clock changes.",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "type",
+          "tags": [],
+          "docs": "Native lifecycle observation or completion. Not all types are available on every platform.\n`verificationStarted` marks the start of SSID checking; it is not an SSID observation.\n`associationConfirmed` is emitted only after the requested SSID is observed.\n`connectionTimedOut` and `permissionDenied` distinguish those terminal failure classes.",
+          "complexTypes": [],
+          "type": "'cleanup' | 'attemptStarted' | 'permissionRequested' | 'requestStarted' | 'requestCompleted' | 'networkAvailable' | 'associationConfirmed' | 'verificationStarted' | 'capabilitiesChanged' | 'ssidVerification' | 'bindingResult' | 'ipReadiness' | 'connectionSucceeded' | 'connectionFailed' | 'connectionTimedOut' | 'permissionDenied' | 'connectionCancelled' | 'networkLost'"
+        }
+      ]
+    },
+    {
+      "name": "DisconnectOptions",
+      "slug": "disconnectoptions",
+      "docs": "Options for disconnecting from a network",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The SSID of the network to disconnect from (optional)\nOn iOS, omission prefers the pending or most recently requested connection; if neither\nis tracked, the plugin reads the current SSID. Supplying the app-owned target is useful\nafter an app restart. Cancelling a pending attempt does not remove a different SSID's\nconfiguration when an explicit target was supplied.",
+          "complexTypes": [],
+          "type": "string | undefined"
+        }
+      ]
+    },
+    {
+      "name": "GetAvailableNetworksResult",
+      "slug": "getavailablenetworksresult",
+      "docs": "Result from getAvailableNetworks()",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "networks",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "List of available networks",
+          "complexTypes": [
+            "Network"
+          ],
+          "type": "Network[]"
+        }
+      ]
+    },
+    {
+      "name": "Network",
+      "slug": "network",
+      "docs": "Represents a Wi-Fi network",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The SSID of the network",
+          "complexTypes": [],
+          "type": "string"
+        },
+        {
+          "name": "rssi",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The signal strength in dBm",
+          "complexTypes": [],
+          "type": "number"
+        },
+        {
+          "name": "securityTypes",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The security types supported by this network (Android SDK 33+ only)",
+          "complexTypes": [
+            "NetworkSecurityType"
+          ],
+          "type": "NetworkSecurityType[] | undefined"
+        }
+      ]
+    },
+    {
+      "name": "GetIpAddressResult",
+      "slug": "getipaddressresult",
+      "docs": "Result from getIpAddress()",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ipAddress",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The device's IP address",
+          "complexTypes": [],
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "GetRssiResult",
+      "slug": "getrssiresult",
+      "docs": "Result from getRssi()",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "rssi",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The signal strength in dBm",
+          "complexTypes": [],
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "name": "GetSsidResult",
+      "slug": "getssidresult",
+      "docs": "Result from getSsid()",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The SSID of the current network",
+          "complexTypes": [],
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "WifiInfo",
+      "slug": "wifiinfo",
+      "docs": "Comprehensive WiFi information",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The SSID (network name) of the current network",
+          "complexTypes": [],
+          "type": "string"
+        },
+        {
+          "name": "bssid",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The BSSID (MAC address) of the access point.\nNot available on iOS.",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "ip",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The device's IP address on the network",
+          "complexTypes": [],
+          "type": "string"
+        },
+        {
+          "name": "frequency",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The network frequency in MHz.\nNot available on iOS.",
+          "complexTypes": [],
+          "type": "number | undefined"
+        },
+        {
+          "name": "linkSpeed",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The connection speed in Mbps.\nNot available on iOS.",
+          "complexTypes": [],
+          "type": "number | undefined"
+        },
+        {
+          "name": "signalStrength",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The signal strength (0-100).\nCalculated from RSSI on Android.\nNot available on iOS.",
+          "complexTypes": [],
+          "type": "number | undefined"
+        }
+      ]
+    },
+    {
+      "name": "IsEnabledResult",
+      "slug": "isenabledresult",
+      "docs": "Result from isEnabled()",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "enabled",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Whether Wi-Fi is enabled",
+          "complexTypes": [],
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "name": "PermissionStatus",
+      "slug": "permissionstatus",
+      "docs": "Permission status",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "location",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Location permission state",
+          "complexTypes": [
+            "PermissionState"
+          ],
+          "type": "PermissionState"
+        }
+      ]
+    },
+    {
+      "name": "RequestPermissionsOptions",
+      "slug": "requestpermissionsoptions",
+      "docs": "Options for requesting permissions",
+      "tags": [
+        {
+          "text": "7.0.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "permissions",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Permissions to request",
+          "complexTypes": [],
+          "type": "'location'[] | undefined"
+        }
+      ]
+    },
+    {
+      "name": "PluginListenerHandle",
+      "slug": "pluginlistenerhandle",
+      "docs": "",
+      "tags": [],
+      "methods": [],
+      "properties": [
+        {
+          "name": "remove",
+          "tags": [],
+          "docs": "",
+          "complexTypes": [],
+          "type": "() => Promise<void>"
+        }
+      ]
+    },
+    {
+      "name": "IsNetworkSavedResult",
+      "slug": "isnetworksavedresult",
+      "docs": "Result from isNetworkSaved()",
+      "tags": [
+        {
+          "text": "8.2.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "isSaved",
+          "tags": [
+            {
+              "text": "8.2.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Whether the network has already been saved/configured by this app",
+          "complexTypes": [],
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "name": "IsNetworkSavedOptions",
+      "slug": "isnetworksavedoptions",
+      "docs": "Options for checking whether a network is saved",
+      "tags": [
+        {
+          "text": "8.2.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "8.2.0",
+              "name": "since"
+            }
+          ],
+          "docs": "The SSID of the network to check",
+          "complexTypes": [],
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "ShareNetworkResult",
+      "slug": "sharenetworkresult",
+      "docs": "Result from shareNetwork()",
+      "tags": [
+        {
+          "text": "8.4.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "started",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Whether the platform sharing flow was started or completed.",
+          "complexTypes": [],
+          "type": "boolean"
+        },
+        {
+          "name": "authorizationState",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "iOS: Authorization state after `requestAuthorization`, when requested.",
+          "complexTypes": [
+            "WifiSharingAuthorizationState"
+          ],
+          "type": "WifiSharingAuthorizationState"
+        },
+        {
+          "name": "askToShareState",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "iOS: Result of `askToShare` when requested.",
+          "complexTypes": [
+            "WifiSharingAskState"
+          ],
+          "type": "WifiSharingAskState"
+        }
+      ]
+    },
+    {
+      "name": "ShareNetworkOptions",
+      "slug": "sharenetworkoptions",
+      "docs": "Options for sharing Wi-Fi network credentials",
+      "tags": [
+        {
+          "text": "8.4.0",
+          "name": "since"
+        }
+      ],
+      "methods": [],
+      "properties": [
+        {
+          "name": "dppUri",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Android: Wi-Fi Easy Connect (DPP) URI from the target device.\nWhen provided, launches the system UI to provision Wi-Fi credentials to that device.",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "ssid",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Network SSID to share via QR code on Android.\nWhen omitted, the system uses the currently connected network when possible.",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "password",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Network password for QR code sharing on Android.\nRequired when sharing a specific WPA/WPA2/WPA3 network via QR code.\niOS does not allow reading saved Wi-Fi passwords from the system.",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "bluetoothIdentifier",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "iOS 26.2+: Bluetooth identifier of a paired AccessorySetupKit accessory.\nRequired for Wi-Fi Infrastructure network sharing on iOS unless `accessoryIdentifier` is set.",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "accessoryIdentifier",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            }
+          ],
+          "docs": "iOS 26.2+: Accessory UUID from AccessorySetupKit.\nAlternative lookup key when `bluetoothIdentifier` is unavailable.",
+          "complexTypes": [],
+          "type": "string | undefined"
+        },
+        {
+          "name": "requestAuthorization",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            },
+            {
+              "text": "false",
+              "name": "default"
+            }
+          ],
+          "docs": "iOS 26.2+: Request initial Wi-Fi network sharing authorization for the accessory.",
+          "complexTypes": [],
+          "type": "boolean | undefined"
+        },
+        {
+          "name": "askToShare",
+          "tags": [
+            {
+              "text": "8.4.0",
+              "name": "since"
+            },
+            {
+              "text": "true",
+              "name": "default"
+            }
+          ],
+          "docs": "iOS 26.2+: Prompt the user to share the current Wi-Fi network with the accessory.",
+          "complexTypes": [],
+          "type": "boolean | undefined"
+        }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "name": "NetworkSecurityType",
+      "slug": "networksecuritytype",
+      "members": [
+        {
+          "name": "OPEN",
+          "value": "0",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Open network with no security"
+        },
+        {
+          "name": "WEP",
+          "value": "1",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WEP security"
+        },
+        {
+          "name": "WPA2_PSK",
+          "value": "2",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WPA/WPA2 Personal (PSK)"
+        },
+        {
+          "name": "EAP",
+          "value": "3",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WPA/WPA2/WPA3 Enterprise (EAP)"
+        },
+        {
+          "name": "SAE",
+          "value": "4",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WPA3 Personal (SAE)"
+        },
+        {
+          "name": "WPA3_ENTERPRISE",
+          "value": "5",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WPA3 Enterprise"
+        },
+        {
+          "name": "WPA3_ENTERPRISE_192_BIT",
+          "value": "6",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WPA3 Enterprise 192-bit mode"
+        },
+        {
+          "name": "PASSPOINT",
+          "value": "7",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Passpoint network"
+        },
+        {
+          "name": "OWE",
+          "value": "8",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "Enhanced Open (OWE)"
+        },
+        {
+          "name": "WAPI_PSK",
+          "value": "9",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WAPI PSK"
+        },
+        {
+          "name": "WAPI_CERT",
+          "value": "10",
+          "tags": [
+            {
+              "text": "7.0.0",
+              "name": "since"
+            }
+          ],
+          "docs": "WAPI Certificate"
+        }
+      ]
+    }
+  ],
+  "typeAliases": [
+    {
+      "name": "PermissionState",
+      "slug": "permissionstate",
+      "docs": "",
+      "types": [
+        {
+          "text": "'prompt'",
+          "complexTypes": []
+        },
+        {
+          "text": "'prompt-with-rationale'",
+          "complexTypes": []
+        },
+        {
+          "text": "'granted'",
+          "complexTypes": []
+        },
+        {
+          "text": "'denied'",
+          "complexTypes": []
+        }
+      ]
+    },
+    {
+      "name": "WifiSharingAuthorizationState",
+      "slug": "wifisharingauthorizationstate",
+      "docs": "Authorization state returned by iOS Wi-Fi Infrastructure sharing",
+      "types": [
+        {
+          "text": "'authorized'",
+          "complexTypes": []
+        },
+        {
+          "text": "'denied'",
+          "complexTypes": []
+        },
+        {
+          "text": "'notDetermined'",
+          "complexTypes": []
+        },
+        {
+          "text": "'unsupported'",
+          "complexTypes": []
+        }
+      ]
+    },
+    {
+      "name": "WifiSharingAskState",
+      "slug": "wifisharingaskstate",
+      "docs": "Result state returned by iOS Wi-Fi Infrastructure askToShare()",
+      "types": [
+        {
+          "text": "'shared'",
+          "complexTypes": []
+        },
+        {
+          "text": "'declined'",
+          "complexTypes": []
+        },
+        {
+          "text": "'cancelled'",
+          "complexTypes": []
+        },
+        {
+          "text": "'notNeeded'",
+          "complexTypes": []
+        },
+        {
+          "text": "'unsupported'",
+          "complexTypes": []
+        }
+      ]
+    }
+  ],
+  "pluginConfigs": []
+}

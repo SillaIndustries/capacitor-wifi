@@ -1,0 +1,1092 @@
+import type { PluginListenerHandle } from '@capacitor/core';
+/**
+ * WiFi plugin for managing device WiFi connectivity
+ *
+ * @since 7.0.0
+ */
+export interface CapacitorWifiPlugin {
+    /**
+     * Show a system dialog to add a Wi-Fi network to the device.
+     * On Android SDK 30+, this opens the system Wi-Fi settings with the network pre-filled.
+     * On iOS, this connects to the network directly.
+     *
+     * @param options - Network configuration options
+     * @returns Promise that resolves when the network is added
+     * @throws Error if adding the network fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * await CapacitorWifi.addNetwork({
+     *   ssid: 'MyNetwork',
+     *   password: 'mypassword',
+     *   isHiddenSsid: false,
+     *   securityType: NetworkSecurityType.WPA2_PSK
+     * });
+     * ```
+     */
+    addNetwork(options: AddNetworkOptions): Promise<void>;
+    /**
+     * Connect to a Wi-Fi network.
+     * On Android, this creates a temporary connection that doesn't route traffic through the network by default.
+     * Set autoRouteTraffic to true to bind app traffic to the connected network (useful for local/device-hosted APs).
+     * For a persistent connection on Android, use addNetwork() instead.
+     * On iOS, this creates a persistent connection.
+     * iOS allows requestTimeoutMs (default 120000) for the configuration request and system
+     * consent prompt, then starts timeoutMs (default 30000) to confirm the requested SSID.
+     * A timeout/error keeps the persistent iOS configuration; the OS may finish joining later.
+     * Use disconnect() to cancel plugin verification and request configuration removal.
+     * The plugin cannot cancel Apple's pending system operation or dismiss its prompt.
+     * Android 10+ requests do not require internet access, regardless of autoRouteTraffic.
+     * Android SSID verification requires precise location permission and enabled location services.
+     * On Android 12+, verification uses location-inclusive callbacks for the requested network.
+     *
+     * Resolves only after the device is confirmed associated with the requested SSID.
+     * On Android, autoRouteTraffic: true also requires successful process binding;
+     * a binding failure rejects with CONNECTION_FAILED. Association does not prove that
+     * a charger or other local service is ready; check that service separately.
+     * Successful Android 10+ temporary connections are retained until disconnect(), replacement,
+     * network loss, or plugin destruction. Failure/cancellation releases the request and
+     * any process binding still owned by the plugin.
+     * On failure, rejects with a Capacitor error that includes a stable `code`
+     * from {@link WifiConnectionErrorCode}. Prefer `error.code` over parsing `error.message`.
+     * Specific codes are returned only when the native OS provides that reason;
+     * otherwise the plugin returns `CONNECTION_FAILED`.
+     * Errors from a started native attempt include optional data.ssidVerification
+     * ('unavailable', 'mismatch', or 'match') and data.elapsedMs (Android excludes location authorization).
+     * On iOS, SSID observation is included for verification-stage errors.
+     * data.bindingSucceeded is Android-only and included when process binding was attempted.
+     * data.connectionStage distinguishes request/association from verification deadlines;
+     * unavailable SSID information is not proof that the phone failed to join.
+     * data.attemptId correlates a connection error with getConnectionDiagnostics().
+     * On Android, callback processing rechecks the timeout deadline before binding or resolving.
+     *
+     * @param options - Connection options
+     * @returns Promise that resolves when connected
+     * @throws CapacitorException with `code` from {@link WifiConnectionErrorCode}
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * try {
+     *   await CapacitorWifi.connect({
+     *     ssid: 'MyNetwork',
+     *     password: 'mypassword',
+     *     autoRouteTraffic: true, // Android only
+     *     timeoutMs: 30000,
+     *   });
+     * } catch (error: any) {
+     *   switch (error.code) {
+     *     case WifiConnectionErrorCode.WIFI_DISABLED:
+     *       // Ask the user to enable Wi-Fi
+     *       break;
+     *     case WifiConnectionErrorCode.PERMISSION_DENIED:
+     *       // Request the required permission
+     *       break;
+     *     default:
+     *       // Generic connection error
+     *       break;
+     *   }
+     * }
+     * ```
+     */
+    connect(options: ConnectOptions): Promise<void>;
+    /**
+     * Get an identifier-free diagnostic snapshot of the latest accepted connection attempt.
+     * Available on Android and iOS; unsupported on Web. Concurrent connect() calls rejected
+     * with CONNECTION_IN_PROGRESS do not replace the ongoing attempt's report.
+     * The snapshot contains at most 64 recent events for that attempt, held only in memory.
+     * Older events are counted by droppedEventCount; a new attempt replaces the report.
+     * Before any attempt, attempt is absent and events is empty.
+     *
+     * This method does not request permissions, change routing, reconnect, or probe a service.
+     * Android reads IP information for the requested network, not the cellular/default network.
+     * iOS refreshes SSID/IP observations with a five-second lookup budget when a target is known;
+     * unavailable or superseded reads return unknown/cached observations, with sample timestamps.
+     * IP information is attributed to the iOS target only when its current SSID matches.
+     * Watchdog delivery can be delayed while the app cannot execute.
+     *
+     * The outcome is the historical result of connect(), not a live connectivity guarantee.
+     * An assigned IPv4 address does not prove a working route, internet, or charger-service readiness.
+     * In particular, link-local-only addressing is not evidence of successful DHCP configuration.
+     * Check local services separately in the application.
+     *
+     * Reports omit SSIDs, BSSIDs, actual IP addresses, passwords, tokens, and raw native messages.
+     * Error codes and numeric native reasons remain available without exporting localized text.
+     *
+     * @returns A bounded diagnostic report suitable for application support exports
+     * @example
+     * ```typescript
+     * const diagnostics = await CapacitorWifi.getConnectionDiagnostics();
+     * console.log(diagnostics.attempt?.outcome, diagnostics.attempt?.ipReadiness);
+     * // Attach diagnostics to an app-controlled support report.
+     * ```
+     */
+    getConnectionDiagnostics(): Promise<WifiConnectionDiagnosticsSnapshot>;
+    /**
+     * Disconnect from the current Wi-Fi network.
+     * On iOS, only disconnects from networks that were added via this plugin.
+     * Cancels a pending iOS connect() with CONNECTION_FAILED. An explicit SSID selects
+     * the configuration to remove; otherwise iOS targets the pending or most recently
+     * requested connection, falling back to the current SSID if no target is tracked.
+     * That fallback lookup is bounded to 120000 ms and can reject with CONNECTION_TIMEOUT.
+     * Late native results cannot resolve a cancelled call or remove a newer request for
+     * the same SSID. Saved networks owned by the user or another app cannot be removed.
+     * On Android, cancels a pending connect() with CONNECTION_FAILED and releases the
+     * retained Wi-Fi request and any process binding still owned by the plugin.
+     *
+     * @param options - Optional disconnect options
+     * @returns Promise that resolves when disconnected
+     * @throws Error if disconnection fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * await CapacitorWifi.disconnect();
+     * ```
+     */
+    disconnect(options?: DisconnectOptions): Promise<void>;
+    /**
+     * Get a list of available Wi-Fi networks from the last scan.
+     * Only available on Android.
+     *
+     * @returns Promise that resolves with the list of networks
+     * @throws Error if getting networks fails or on unsupported platform
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const { networks } = await CapacitorWifi.getAvailableNetworks();
+     * networks.forEach(network => {
+     *   console.log(`SSID: ${network.ssid}, Signal: ${network.rssi} dBm`);
+     * });
+     * ```
+     */
+    getAvailableNetworks(): Promise<GetAvailableNetworksResult>;
+    /**
+     * Get the device's current IP address.
+     * Available on both Android and iOS.
+     *
+     * @returns Promise that resolves with the IP address
+     * @throws Error if getting IP address fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const { ipAddress } = await CapacitorWifi.getIpAddress();
+     * console.log('IP Address:', ipAddress);
+     * ```
+     */
+    getIpAddress(): Promise<GetIpAddressResult>;
+    /**
+     * Get the received signal strength indicator (RSSI) of the current network in dBm.
+     * Only available on Android.
+     *
+     * @returns Promise that resolves with the RSSI value
+     * @throws Error if getting RSSI fails or on unsupported platform
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const { rssi } = await CapacitorWifi.getRssi();
+     * console.log('Signal strength:', rssi, 'dBm');
+     * ```
+     */
+    getRssi(): Promise<GetRssiResult>;
+    /**
+     * Get the service set identifier (SSID) of the current network.
+     * Available on both Android and iOS.
+     *
+     * @returns Promise that resolves with the SSID
+     * @throws Error if getting SSID fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const { ssid } = await CapacitorWifi.getSsid();
+     * console.log('Connected to:', ssid);
+     * ```
+     */
+    getSsid(): Promise<GetSsidResult>;
+    /**
+     * Get comprehensive information about the currently connected WiFi network.
+     * This method provides detailed network information including SSID, BSSID, IP address,
+     * frequency, link speed, and signal strength in a single call.
+     * On iOS, some fields may not be available and will be undefined.
+     *
+     * @returns Promise that resolves with the WiFi information
+     * @throws Error if getting WiFi info fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const info = await CapacitorWifi.getWifiInfo();
+     * console.log('Network:', info.ssid);
+     * console.log('BSSID:', info.bssid);
+     * console.log('IP:', info.ip);
+     * console.log('Frequency:', info.frequency, 'MHz');
+     * console.log('Speed:', info.linkSpeed, 'Mbps');
+     * console.log('Signal:', info.signalStrength);
+     * ```
+     */
+    getWifiInfo(): Promise<WifiInfo>;
+    /**
+     * Check if Wi-Fi is enabled on the device.
+     * Only available on Android.
+     *
+     * @returns Promise that resolves with the Wi-Fi enabled status
+     * @throws Error if checking status fails or on unsupported platform
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const { enabled } = await CapacitorWifi.isEnabled();
+     * console.log('WiFi is', enabled ? 'enabled' : 'disabled');
+     * ```
+     */
+    isEnabled(): Promise<IsEnabledResult>;
+    /**
+     * Start scanning for Wi-Fi networks.
+     * Only available on Android.
+     * Results are delivered via the 'networksScanned' event listener.
+     * Note: May fail due to system throttling or hardware issues.
+     *
+     * @returns Promise that resolves when scan starts
+     * @throws Error if scan fails or on unsupported platform
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * await CapacitorWifi.addListener('networksScanned', () => {
+     *   console.log('Scan completed');
+     * });
+     * await CapacitorWifi.startScan();
+     * ```
+     */
+    startScan(): Promise<void>;
+    /**
+     * Check the current permission status for location access.
+     * Location permission is required for Wi-Fi operations on both platforms.
+     *
+     * @returns Promise that resolves with the permission status
+     * @throws Error if checking permissions fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const status = await CapacitorWifi.checkPermissions();
+     * console.log('Location permission:', status.location);
+     * ```
+     */
+    checkPermissions(): Promise<PermissionStatus>;
+    /**
+     * Request location permissions from the user.
+     * Location permission is required for Wi-Fi operations on both platforms.
+     *
+     * @param options - Optional permission request options
+     * @returns Promise that resolves with the updated permission status
+     * @throws Error if requesting permissions fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const status = await CapacitorWifi.requestPermissions();
+     * if (status.location === 'granted') {
+     *   console.log('Permission granted');
+     * }
+     * ```
+     */
+    requestPermissions(options?: RequestPermissionsOptions): Promise<PermissionStatus>;
+    /**
+     * Add a listener for the 'networksScanned' event.
+     * Only available on Android.
+     * This event is fired when Wi-Fi scan results are available.
+     *
+     * @param eventName - The event name ('networksScanned')
+     * @param listenerFunc - The callback function to execute
+     * @returns Promise that resolves with a listener handle
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const listener = await CapacitorWifi.addListener('networksScanned', async () => {
+     *   const { networks } = await CapacitorWifi.getAvailableNetworks();
+     *   console.log('Found networks:', networks);
+     * });
+     * ```
+     */
+    addListener(eventName: 'networksScanned', listenerFunc: () => void): Promise<PluginListenerHandle>;
+    /**
+     * Remove all listeners for this plugin.
+     *
+     * @returns Promise that resolves when all listeners are removed
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * await CapacitorWifi.removeAllListeners();
+     * ```
+     */
+    removeAllListeners(): Promise<void>;
+    /**
+     * Check whether a network with the given SSID has already been saved/configured by this app.
+     * On Android SDK 30+, this checks the app's Wi-Fi network suggestions.
+     * On older Android (including SDK 29), this checks the system's configured networks list.
+     * On iOS, this checks the hotspot configurations managed by this app.
+     * Use this to decide whether to call addNetwork() (first time) or connect() (already saved).
+     *
+     * @param options - Options containing the SSID to check
+     * @returns Promise that resolves with whether the network is saved
+     * @throws Error if the check fails
+     * @since 8.2.0
+     * @example
+     * ```typescript
+     * const { isSaved } = await CapacitorWifi.isNetworkSaved({ ssid: 'MyNetwork' });
+     * if (isSaved) {
+     *   await CapacitorWifi.connect({ ssid: 'MyNetwork', password: 'mypassword' });
+     * } else {
+     *   await CapacitorWifi.addNetwork({ ssid: 'MyNetwork', password: 'mypassword' });
+     * }
+     * ```
+     */
+    isNetworkSaved(options: IsNetworkSavedOptions): Promise<IsNetworkSavedResult>;
+    /**
+     * Share Wi-Fi network credentials using platform-native sharing flows.
+     *
+     * On Android 10+, this uses Wi-Fi Easy Connect (DPP). When `dppUri` is provided, the system
+     * provisions credentials to the target device. Otherwise, it opens the system UI to share the
+     * current or specified network (optionally via QR code when `ssid` and `password` are provided).
+     *
+     * On iOS 26.2+, this uses the Wi-Fi Infrastructure framework with a paired AccessorySetupKit
+     * accessory. The host app must pair the accessory first and pass its `bluetoothIdentifier` or
+     * `accessoryIdentifier`. The app also needs the `com.apple.developer.wifi-infrastructure` entitlement.
+     *
+     * @param options - Sharing options
+     * @returns Promise that resolves when the sharing flow starts or completes
+     * @throws Error if sharing is unavailable or fails
+     * @since 8.4.0
+     * @example
+     * ```typescript
+     * // Android: provision credentials to an IoT device via DPP URI
+     * await CapacitorWifi.shareNetwork({ dppUri: 'DPP:...' });
+     *
+     * // Android: show system UI to share the current network
+     * await CapacitorWifi.shareNetwork();
+     *
+     * // iOS: share with a paired Bluetooth accessory
+     * await CapacitorWifi.shareNetwork({
+     *   bluetoothIdentifier: accessory.bluetoothIdentifier,
+     *   requestAuthorization: true,
+     *   askToShare: true,
+     * });
+     * ```
+     */
+    shareNetwork(options?: ShareNetworkOptions): Promise<ShareNetworkResult>;
+    /**
+     * Get the native plugin version.
+     *
+     * @returns Promise that resolves with the plugin version
+     * @throws Error if getting the version fails
+     * @since 7.0.0
+     * @example
+     * ```typescript
+     * const { version } = await CapacitorWifi.getPluginVersion();
+     * console.log('Plugin version:', version);
+     * ```
+     */
+    getPluginVersion(): Promise<{
+        version: string;
+    }>;
+}
+/**
+ * Options for adding a network
+ *
+ * @since 7.0.0
+ */
+export interface AddNetworkOptions {
+    /**
+     * The SSID of the network to add
+     *
+     * @since 7.0.0
+     */
+    ssid: string;
+    /**
+     * The password for the network (optional for open networks)
+     *
+     * @since 7.0.0
+     */
+    password?: string;
+    /**
+     * Whether the network is hidden (Android only)
+     *
+     * @since 7.0.0
+     * @default false
+     */
+    isHiddenSsid?: boolean;
+    /**
+     * The security type of the network (Android only)
+     *
+     * @since 7.0.0
+     * @default NetworkSecurityType.WPA2_PSK
+     */
+    securityType?: NetworkSecurityType;
+}
+/**
+ * Options for connecting to a network
+ *
+ * @since 7.0.0
+ */
+export interface ConnectOptions {
+    /**
+     * The SSID of the network to connect to
+     *
+     * @since 7.0.0
+     */
+    ssid: string;
+    /**
+     * The password for the network (optional for open networks)
+     *
+     * @since 7.0.0
+     */
+    password?: string;
+    /**
+     * Whether the network is hidden (Android only)
+     *
+     * @since 7.0.0
+     * @default false
+     */
+    isHiddenSsid?: boolean;
+    /**
+     * Whether to automatically route app traffic through the connected Wi-Fi network (Android only)
+     * When enabled, it binds the app process to the connected network using ConnectivityManager.bindProcessToNetwork()
+     * This is useful for connecting to local/device-hosted APs (e.g., ESP32, IoT devices) that don't have internet access.
+     * Does not require the Wi-Fi network to provide internet access. If process binding
+     * fails, connect() rejects with CONNECTION_FAILED and data.bindingSucceeded is false.
+     * While bound to an offline AP, app cloud requests may fail even if cellular is available.
+     * Disconnect or replace the connection to release the plugin-owned routing.
+     *
+     * @since 7.0.0
+     * @default false
+     */
+    autoRouteTraffic?: boolean;
+    /**
+     * Maximum time in milliseconds to wait for confirmation that the device is associated
+     * with the requested SSID before rejecting with `CONNECTION_TIMEOUT`.
+     * Must be positive when provided. Android accepts positive integer milliseconds (up to
+     * the platform's signed 32-bit timeout range); iOS accepts finite positive values up to 600000 ms.
+     * On Android, the budget starts after location authorization and before the native
+     * Wi-Fi request, so time spent in the system Wi-Fi consent dialog counts toward it.
+     * On Android 10+, a timeout releases the temporary request and plugin-owned process binding.
+     * On iOS, this is a separate verification budget starting after the configuration
+     * request succeeds (or reports alreadyAssociated); system consent uses requestTimeoutMs.
+     * iOS accepts finite positive values up to 600000 ms and retains configuration on timeout.
+     * Native watchdogs run when the app can execute; background suspension can delay delivery.
+     *
+     * @since 8.5.0
+     * @default 30000
+     */
+    timeoutMs?: number;
+    /**
+     * Maximum time in milliseconds for the iOS hotspot configuration request to complete,
+     * including the system consent prompt. iOS only; ignored on Android and Web.
+     * After success/alreadyAssociated, timeoutMs provides a separate SSID verification budget.
+     * Must be a finite positive number no greater than 600000 when provided on iOS.
+     * Expiry rejects with CONNECTION_TIMEOUT and data.connectionStage: 'request', retaining
+     * the persistent configuration. Apple's operation can complete after the plugin times out.
+     * Watchdog delivery can be delayed while the app is suspended.
+     *
+     * @default 120000
+     */
+    requestTimeoutMs?: number;
+}
+/**
+ * Stable error codes returned by {@link CapacitorWifiPlugin.connect} on failure.
+ * Specific codes are returned only when the native platform explicitly provides that reason.
+ * Otherwise the plugin returns {@link WifiConnectionErrorCode.CONNECTION_FAILED}.
+ *
+ * @since 8.5.0
+ */
+export declare enum WifiConnectionErrorCode {
+    /**
+     * The SSID, password format, security configuration, timeout, or native request parameters are invalid.
+     *
+     * @since 8.5.0
+     */
+    INVALID_CONFIGURATION = "INVALID_CONFIGURATION",
+    /**
+     * A required permission or authorization is missing or was denied.
+     *
+     * @since 8.5.0
+     */
+    PERMISSION_DENIED = "PERMISSION_DENIED",
+    /**
+     * Wi-Fi is disabled and the connection cannot be started.
+     *
+     * @since 8.5.0
+     */
+    WIFI_DISABLED = "WIFI_DISABLED",
+    /**
+     * The native API explicitly reports that the user rejected the connection request.
+     * Available on iOS; on Android only when the OS reports user rejection (API 36+).
+     *
+     * @since 8.5.0
+     */
+    USER_DENIED = "USER_DENIED",
+    /**
+     * The native API explicitly reports an authentication failure.
+     * Not reliably available on Android API 29–33.
+     *
+     * @since 8.5.0
+     */
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED",
+    /**
+     * The native API explicitly reports that the requested access point was not found.
+     * Not reliably available on Android API 29–33.
+     *
+     * @since 8.5.0
+     */
+    NETWORK_NOT_FOUND = "NETWORK_NOT_FOUND",
+    /**
+     * The plugin timeout expired before the requested network was confirmed as connected.
+     *
+     * @since 8.5.0
+     */
+    CONNECTION_TIMEOUT = "CONNECTION_TIMEOUT",
+    /**
+     * The connection failed, but the platform did not provide a reliable detailed reason.
+     * Also returned on Android when requested process binding fails or disconnect()
+     * cancels a pending connection.
+     * On iOS, disconnect() also cancels a pending connection with this code.
+     *
+     * @since 8.5.0
+     */
+    CONNECTION_FAILED = "CONNECTION_FAILED",
+    /**
+     * Another Wi-Fi connection attempt is already active.
+     *
+     * @since 8.5.0
+     */
+    CONNECTION_IN_PROGRESS = "CONNECTION_IN_PROGRESS",
+    /**
+     * An unexpected plugin or native error occurred.
+     *
+     * @since 8.5.0
+     */
+    UNKNOWN = "UNKNOWN"
+}
+/**
+ * Optional platform-specific diagnostics attached to a rejected `connect()` call.
+ * Applications should depend only on the stable plugin `code`.
+ *
+ * @since 8.5.0
+ */
+export interface WifiConnectionErrorData {
+    /**
+     * Identifier of the plugin connection attempt, matching the diagnostics snapshot.
+     * Present for a reserved attempt, including validation/permission failures;
+     * an overlapping rejected call does not reuse the ongoing attempt's identifier.
+     */
+    attemptId?: number;
+    /**
+     * Platform that produced the error
+     *
+     * @since 8.5.0
+     */
+    platform: 'android' | 'ios';
+    /**
+     * Native error or reason code when available
+     *
+     * @since 8.5.0
+     */
+    nativeCode?: number | string;
+    /**
+     * Native error message when available (may be localized; do not parse for logic)
+     *
+     * @since 8.5.0
+     */
+    nativeMessage?: string;
+    /**
+     * Android API level of the device
+     *
+     * @since 8.5.0
+     */
+    androidApiLevel?: number;
+    /**
+     * Requested-SSID observation at failure on Android/iOS: unreadable/redacted, a known mismatch,
+     * or a match. Unavailable information is not proof of association failure.
+     * iOS includes this field for verification-stage errors.
+     */
+    ssidVerification?: 'unavailable' | 'mismatch' | 'match';
+    /**
+     * Android process-binding result when autoRouteTraffic was requested and binding attempted.
+     */
+    bindingSucceeded?: boolean;
+    /**
+     * Elapsed time in milliseconds since the native connection attempt started on Android/iOS.
+     * Android excludes the location authorization prompt; iOS includes request and verification time.
+     */
+    elapsedMs?: number;
+    /**
+     * Stage of the connection flow where the failure occurred
+     * (`routing` is reported when Android cannot establish requested app routing).
+     *
+     * @since 8.5.0
+     */
+    connectionStage?: 'validation' | 'permission' | 'request' | 'association' | 'authentication' | 'ipProvisioning' | 'verification' | 'routing';
+}
+/** Last observed connection phase; reporting does not change connect() success semantics. */
+export type WifiDiagnosticStage = 'validation' | 'permission' | 'request' | 'association' | 'authentication' | 'ipProvisioning' | 'verification' | 'routing' | 'connected' | 'cleanup';
+/**
+ * Address classification, independent of internet and local-service availability.
+ * unknown means the requested network cannot be observed/attributed, or information is unavailable.
+ * missing means an attributable sample had no eligible unicast address.
+ * linkLocalOnly includes self-assigned 169.254/16 IPv4 and link-local IPv6 without other addressing.
+ * ipv4Assigned means eligible non-link-local IPv4 exists; ipv6Only means only eligible non-link-local IPv6 exists.
+ * None of these values guarantees charger reachability.
+ */
+export type WifiIpReadiness = 'unknown' | 'missing' | 'linkLocalOnly' | 'ipv4Assigned' | 'ipv6Only';
+/** Structured failure detail, excluding raw native messages and network identifiers. */
+export interface WifiDiagnosticError {
+    /** Stable plugin error code. */
+    code: WifiConnectionErrorCode;
+    /** Phase in which the attempt failed or was cancelled. */
+    stage: WifiDiagnosticStage;
+    /** Native numeric reason normalized to a string, when supplied by the OS. */
+    nativeCode?: string;
+    /** iOS hotspot error domain, or 'other'; arbitrary domain text is not exported. */
+    nativeDomain?: string;
+}
+/** Cached diagnostic state; observation timestamps identify its freshness. */
+export interface WifiDiagnosticState {
+    /** Historical connection result; connected remains historical after loss/disconnect. */
+    outcome: 'pending' | 'connected' | 'failed' | 'cancelled';
+    /** Phase of the latest recorded event. */
+    stage: WifiDiagnosticStage;
+    /**
+     * Last known plugin process-binding/setup or cleanup state, not a continuous routing monitor.
+     * notApplicable is used on iOS. released does not guarantee internet recovery when another component controls routing.
+     */
+    routing: 'notRequested' | 'pending' | 'bound' | 'failed' | 'released' | 'notApplicable';
+    /** Latest observed relationship to the requested SSID, without exposing its name. */
+    ssidVerification: 'unavailable' | 'mismatch' | 'match';
+    /** Address readiness classification for an attributable requested-network sample. */
+    ipReadiness: WifiIpReadiness;
+    /** Time since attempt reservation in milliseconds, using a monotonic clock. */
+    elapsedMs: number;
+    /** Unix epoch milliseconds of the most recent IP observation, including unavailable observations. */
+    ipObservedAt?: number;
+    /** Unix epoch milliseconds of the most recent SSID observation. */
+    ssidObservedAt?: number;
+    /** Android cleanup result; omitted on iOS because configuration removal has no completion result. */
+    cleanupSucceeded?: boolean;
+    /** Last failure/cancellation detail. */
+    error?: WifiDiagnosticError;
+}
+/** Latest connection attempt's diagnostic state. */
+export interface WifiDiagnosticAttempt extends WifiDiagnosticState {
+    /** Session-local identifier. Does not identify a physical network. */
+    id: number;
+    /** Unix epoch milliseconds when the plugin reserved the attempt. */
+    startedAt: number;
+    /** Unix epoch milliseconds of the most recent diagnostic update. */
+    updatedAt: number;
+}
+/** A chronological event with the diagnostic state observed at that point. */
+export interface WifiDiagnosticEvent extends WifiDiagnosticState {
+    /** Session-local attempt identifier. */
+    attemptId: number;
+    /** Increasing sequence within the attempt; missing earlier numbers indicate dropped events. */
+    sequence: number;
+    /** Unix epoch milliseconds. Use sequence/elapsedMs for ordering if the wall clock changes. */
+    timestamp: number;
+    /**
+     * Native lifecycle observation or completion. Not all types are available on every platform.
+     * `verificationStarted` marks the start of SSID checking; it is not an SSID observation.
+     * `associationConfirmed` is emitted only after the requested SSID is observed.
+     * `connectionTimedOut` and `permissionDenied` distinguish those terminal failure classes.
+     */
+    type: 'attemptStarted' | 'permissionRequested' | 'requestStarted' | 'requestCompleted' | 'networkAvailable' | 'associationConfirmed' | 'verificationStarted' | 'capabilitiesChanged' | 'ssidVerification' | 'bindingResult' | 'ipReadiness' | 'connectionSucceeded' | 'connectionFailed' | 'connectionTimedOut' | 'permissionDenied' | 'connectionCancelled' | 'networkLost' | 'cleanup';
+}
+/** In-memory diagnostic report for the latest accepted plugin connection attempt. */
+export interface WifiConnectionDiagnosticsSnapshot {
+    /** Native platform producing the report. */
+    platform: 'android' | 'ios';
+    /** Native plugin version; record the fork commit/build identity separately. */
+    pluginVersion: string;
+    /** Unix epoch milliseconds when the snapshot was produced. */
+    capturedAt: number;
+    /** Maximum retained events per attempt; currently 64. */
+    eventLimit: number;
+    /** Number of events discarded from the beginning of this attempt's history. */
+    droppedEventCount: number;
+    /** Absent before the first accepted attempt. */
+    attempt?: WifiDiagnosticAttempt;
+    /** Retained events in sequence order. No disk persistence or unlimited history. */
+    events: WifiDiagnosticEvent[];
+}
+/**
+ * Options for disconnecting from a network
+ *
+ * @since 7.0.0
+ */
+export interface DisconnectOptions {
+    /**
+     * The SSID of the network to disconnect from (optional)
+     * On iOS, omission prefers the pending or most recently requested connection; if neither
+     * is tracked, the plugin reads the current SSID. Supplying the app-owned target is useful
+     * after an app restart. Cancelling a pending attempt does not remove a different SSID's
+     * configuration when an explicit target was supplied.
+     *
+     * @since 7.0.0
+     */
+    ssid?: string;
+}
+/**
+ * Result from getAvailableNetworks()
+ *
+ * @since 7.0.0
+ */
+export interface GetAvailableNetworksResult {
+    /**
+     * List of available networks
+     *
+     * @since 7.0.0
+     */
+    networks: Network[];
+}
+/**
+ * Represents a Wi-Fi network
+ *
+ * @since 7.0.0
+ */
+export interface Network {
+    /**
+     * The SSID of the network
+     *
+     * @since 7.0.0
+     */
+    ssid: string;
+    /**
+     * The signal strength in dBm
+     *
+     * @since 7.0.0
+     */
+    rssi: number;
+    /**
+     * The security types supported by this network (Android SDK 33+ only)
+     *
+     * @since 7.0.0
+     */
+    securityTypes?: NetworkSecurityType[];
+}
+/**
+ * Result from getIpAddress()
+ *
+ * @since 7.0.0
+ */
+export interface GetIpAddressResult {
+    /**
+     * The device's IP address
+     *
+     * @since 7.0.0
+     */
+    ipAddress: string;
+}
+/**
+ * Result from getRssi()
+ *
+ * @since 7.0.0
+ */
+export interface GetRssiResult {
+    /**
+     * The signal strength in dBm
+     *
+     * @since 7.0.0
+     */
+    rssi: number;
+}
+/**
+ * Result from getSsid()
+ *
+ * @since 7.0.0
+ */
+export interface GetSsidResult {
+    /**
+     * The SSID of the current network
+     *
+     * @since 7.0.0
+     */
+    ssid: string;
+}
+/**
+ * Comprehensive WiFi information
+ *
+ * @since 7.0.0
+ */
+export interface WifiInfo {
+    /**
+     * The SSID (network name) of the current network
+     *
+     * @since 7.0.0
+     */
+    ssid: string;
+    /**
+     * The BSSID (MAC address) of the access point.
+     * Not available on iOS.
+     *
+     * @since 7.0.0
+     */
+    bssid?: string;
+    /**
+     * The device's IP address on the network
+     *
+     * @since 7.0.0
+     */
+    ip: string;
+    /**
+     * The network frequency in MHz.
+     * Not available on iOS.
+     *
+     * @since 7.0.0
+     */
+    frequency?: number;
+    /**
+     * The connection speed in Mbps.
+     * Not available on iOS.
+     *
+     * @since 7.0.0
+     */
+    linkSpeed?: number;
+    /**
+     * The signal strength (0-100).
+     * Calculated from RSSI on Android.
+     * Not available on iOS.
+     *
+     * @since 7.0.0
+     */
+    signalStrength?: number;
+}
+/**
+ * Result from isEnabled()
+ *
+ * @since 7.0.0
+ */
+export interface IsEnabledResult {
+    /**
+     * Whether Wi-Fi is enabled
+     *
+     * @since 7.0.0
+     */
+    enabled: boolean;
+}
+/**
+ * Permission status
+ *
+ * @since 7.0.0
+ */
+export interface PermissionStatus {
+    /**
+     * Location permission state
+     *
+     * @since 7.0.0
+     */
+    location: PermissionState;
+}
+/**
+ * Possible permission states
+ *
+ * @since 7.0.0
+ */
+export type PermissionState = 'granted' | 'denied' | 'prompt';
+/**
+ * Options for requesting permissions
+ *
+ * @since 7.0.0
+ */
+export interface RequestPermissionsOptions {
+    /**
+     * Permissions to request
+     *
+     * @since 7.0.0
+     */
+    permissions?: 'location'[];
+}
+/**
+ * Network security types
+ *
+ * @since 7.0.0
+ */
+export declare enum NetworkSecurityType {
+    /**
+     * Open network with no security
+     *
+     * @since 7.0.0
+     */
+    OPEN = 0,
+    /**
+     * WEP security
+     *
+     * @since 7.0.0
+     */
+    WEP = 1,
+    /**
+     * WPA/WPA2 Personal (PSK)
+     *
+     * @since 7.0.0
+     */
+    WPA2_PSK = 2,
+    /**
+     * WPA/WPA2/WPA3 Enterprise (EAP)
+     *
+     * @since 7.0.0
+     */
+    EAP = 3,
+    /**
+     * WPA3 Personal (SAE)
+     *
+     * @since 7.0.0
+     */
+    SAE = 4,
+    /**
+     * WPA3 Enterprise
+     *
+     * @since 7.0.0
+     */
+    WPA3_ENTERPRISE = 5,
+    /**
+     * WPA3 Enterprise 192-bit mode
+     *
+     * @since 7.0.0
+     */
+    WPA3_ENTERPRISE_192_BIT = 6,
+    /**
+     * Passpoint network
+     *
+     * @since 7.0.0
+     */
+    PASSPOINT = 7,
+    /**
+     * Enhanced Open (OWE)
+     *
+     * @since 7.0.0
+     */
+    OWE = 8,
+    /**
+     * WAPI PSK
+     *
+     * @since 7.0.0
+     */
+    WAPI_PSK = 9,
+    /**
+     * WAPI Certificate
+     *
+     * @since 7.0.0
+     */
+    WAPI_CERT = 10
+}
+/**
+ * Options for checking whether a network is saved
+ *
+ * @since 8.2.0
+ */
+export interface IsNetworkSavedOptions {
+    /**
+     * The SSID of the network to check
+     *
+     * @since 8.2.0
+     */
+    ssid: string;
+}
+/**
+ * Result from isNetworkSaved()
+ *
+ * @since 8.2.0
+ */
+export interface IsNetworkSavedResult {
+    /**
+     * Whether the network has already been saved/configured by this app
+     *
+     * @since 8.2.0
+     */
+    isSaved: boolean;
+}
+/**
+ * Options for sharing Wi-Fi network credentials
+ *
+ * @since 8.4.0
+ */
+export interface ShareNetworkOptions {
+    /**
+     * Android: Wi-Fi Easy Connect (DPP) URI from the target device.
+     * When provided, launches the system UI to provision Wi-Fi credentials to that device.
+     *
+     * @since 8.4.0
+     */
+    dppUri?: string;
+    /**
+     * Network SSID to share via QR code on Android.
+     * When omitted, the system uses the currently connected network when possible.
+     *
+     * @since 8.4.0
+     */
+    ssid?: string;
+    /**
+     * Network password for QR code sharing on Android.
+     * Required when sharing a specific WPA/WPA2/WPA3 network via QR code.
+     * iOS does not allow reading saved Wi-Fi passwords from the system.
+     *
+     * @since 8.4.0
+     */
+    password?: string;
+    /**
+     * iOS 26.2+: Bluetooth identifier of a paired AccessorySetupKit accessory.
+     * Required for Wi-Fi Infrastructure network sharing on iOS unless `accessoryIdentifier` is set.
+     *
+     * @since 8.4.0
+     */
+    bluetoothIdentifier?: string;
+    /**
+     * iOS 26.2+: Accessory UUID from AccessorySetupKit.
+     * Alternative lookup key when `bluetoothIdentifier` is unavailable.
+     *
+     * @since 8.4.0
+     */
+    accessoryIdentifier?: string;
+    /**
+     * iOS 26.2+: Request initial Wi-Fi network sharing authorization for the accessory.
+     *
+     * @since 8.4.0
+     * @default false
+     */
+    requestAuthorization?: boolean;
+    /**
+     * iOS 26.2+: Prompt the user to share the current Wi-Fi network with the accessory.
+     *
+     * @since 8.4.0
+     * @default true
+     */
+    askToShare?: boolean;
+}
+/**
+ * Authorization state returned by iOS Wi-Fi Infrastructure sharing
+ *
+ * @since 8.4.0
+ */
+export type WifiSharingAuthorizationState = 'authorized' | 'denied' | 'notDetermined' | 'unsupported';
+/**
+ * Result state returned by iOS Wi-Fi Infrastructure askToShare()
+ *
+ * @since 8.4.0
+ */
+export type WifiSharingAskState = 'shared' | 'declined' | 'cancelled' | 'notNeeded' | 'unsupported';
+/**
+ * Result from shareNetwork()
+ *
+ * @since 8.4.0
+ */
+export interface ShareNetworkResult {
+    /**
+     * Whether the platform sharing flow was started or completed.
+     *
+     * @since 8.4.0
+     */
+    started: boolean;
+    /**
+     * iOS: Authorization state after `requestAuthorization`, when requested.
+     *
+     * @since 8.4.0
+     */
+    authorizationState?: WifiSharingAuthorizationState;
+    /**
+     * iOS: Result of `askToShare` when requested.
+     *
+     * @since 8.4.0
+     */
+    askToShareState?: WifiSharingAskState;
+}
