@@ -117,7 +117,14 @@ addNetwork(options: AddNetworkOptions) => Promise<void>
 ```
 
 Show a system dialog to add a Wi-Fi network to the device.
-On Android SDK 30+, this opens the system Wi-Fi settings with the network pre-filled.
+On Android 13+ (SDK 33+), this opens system Wi-Fi settings with the network pre-filled.
+Android 10 rejects with UNAVAILABLE because the Settings save API is not supported.
+Android 11/12 (SDK 30-32) reject with UNAVAILABLE before opening Settings: the system
+save dialog can crash on an unreachable signal level and close the calling app.
+Use connect() for temporary/device-hotspot sessions on these versions, or let the
+user save the network manually in Wi-Fi settings. Android 9 and earlier use the legacy API.
+No temporary connection is silently substituted for a persistent save.
+Saving does not make isNetworkSaved() available on Android 10+.
 On iOS, this connects to the network directly.
 
 | Param         | Type                                                            | Description                                            |
@@ -428,11 +435,15 @@ Remove all listeners for this plugin.
 isNetworkSaved(options: IsNetworkSavedOptions) => Promise<IsNetworkSavedResult>
 ```
 
-Check whether a network with the given SSID has already been saved/configured by this app.
-On Android SDK 30+, this checks the app's Wi-Fi network suggestions.
-On older Android (including SDK 29), this checks the system's configured networks list.
+Check whether a network with the given SSID has already been saved.
+Android 10+ (SDK 29+) rejects with UNAVAILABLE: ordinary apps cannot query the
+user-managed saved-network list. The app's Wi-Fi suggestions are a separate API
+and do not establish whether addNetwork() saved a network. A local record of a
+previous save cannot establish whether the user has since forgotten that network.
+On Android 9 and earlier, this checks the system's configured networks list.
 On iOS, this checks the hotspot configurations managed by this app.
-Use this to decide whether to call addNetwork() (first time) or connect() (already saved).
+For device-hotspot sessions, call connect() directly without checking saved status.
+Do not convert UNAVAILABLE into isSaved: false or automatically open a save dialog.
 
 | Param         | Type                                                                    | Description                            |
 | ------------- | ----------------------------------------------------------------------- | -------------------------------------- |
@@ -662,9 +673,9 @@ Options for requesting permissions
 
 Result from isNetworkSaved()
 
-| Prop          | Type                 | Description                                                       | Since |
-| ------------- | -------------------- | ----------------------------------------------------------------- | ----- |
-| **`isSaved`** | <code>boolean</code> | Whether the network has already been saved/configured by this app | 8.2.0 |
+| Prop          | Type                 | Description                                                                                                                                                            | Since |
+| ------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| **`isSaved`** | <code>boolean</code> | Whether the network is saved (Android 9 and earlier) or configured by this app (iOS). No result is returned on Android 10+: isNetworkSaved() rejects with UNAVAILABLE. | 8.2.0 |
 
 
 #### IsNetworkSavedOptions

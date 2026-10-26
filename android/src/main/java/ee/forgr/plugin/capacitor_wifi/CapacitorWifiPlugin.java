@@ -117,14 +117,35 @@ public class CapacitorWifiPlugin extends Plugin {
 
     @PluginMethod
     public void addNetwork(PluginCall call) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        String ssid = call.getString("ssid");
+        if (ssid == null || ssid.isEmpty()) {
+            call.reject("SSID is required");
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+            call.unavailable("Saving a network through Settings requires Android 11 or later. Use connect() for a temporary connection.");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+            // Android 11/12 Settings passes WIFI_LEVEL_UNREACHABLE (-1) to its
+            // signal-icon renderer. Its uncaught exception can finish the host
+            // app's activity too; catching exceptions here cannot contain it.
+            // Android 13 adds the missing guard. Do not launch the older UI.
+            call.unavailable(
+                "Network saving is disabled on Android 11 and 12 because the system save dialog can crash and close the app. " +
+                    "Use connect() for a temporary connection, or save the network manually in Wi-Fi settings."
+            );
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             addNetworkModern(call);
         } else {
             addNetworkLegacy(call);
         }
     }
 
-    @RequiresApi(api = Build.VERSION_CODES.Q)
+    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
     private void addNetworkModern(PluginCall call) {
         String ssid = call.getString("ssid");
         if (ssid == null || ssid.isEmpty()) {
@@ -192,30 +213,33 @@ public class CapacitorWifiPlugin extends Plugin {
             return;
         }
 
-        Intent data = result.getData();
-        if (data == null || !data.hasExtra(Settings.EXTRA_WIFI_NETWORK_RESULT_LIST)) {
-            call.reject("Failed to add network");
-            return;
-        }
-
-        ArrayList<Integer> codes = data.getIntegerArrayListExtra(Settings.EXTRA_WIFI_NETWORK_RESULT_LIST);
-        Integer firstCode = codes != null && !codes.isEmpty() ? codes.get(0) : null;
-
-        if (firstCode == null) {
-            call.reject("Failed to add network");
-            return;
-        }
-
-        switch (firstCode) {
-            case Settings.ADD_WIFI_RESULT_SUCCESS:
-            case Settings.ADD_WIFI_RESULT_ALREADY_EXISTS:
-                call.resolve();
-                return;
-            case Settings.ADD_WIFI_RESULT_ADD_OR_UPDATE_FAILED:
+        try {
+            Intent data = result.getData();
+            if (data == null || !data.hasExtra(Settings.EXTRA_WIFI_NETWORK_RESULT_LIST)) {
                 call.reject("Failed to add network");
                 return;
-            default:
+            }
+
+            ArrayList<Integer> codes = data.getIntegerArrayListExtra(Settings.EXTRA_WIFI_NETWORK_RESULT_LIST);
+            Integer firstCode = codes != null && !codes.isEmpty() ? codes.get(0) : null;
+
+            if (firstCode == null) {
                 call.reject("Failed to add network");
+                return;
+            }
+
+            switch (firstCode) {
+                case Settings.ADD_WIFI_RESULT_SUCCESS:
+                case Settings.ADD_WIFI_RESULT_ALREADY_EXISTS:
+                    call.resolve();
+                    return;
+                default:
+                    call.reject("Failed to add network");
+            }
+        } catch (RuntimeException e) {
+            // Malformed OEM result payloads must reject the JS promise rather
+            // than escape through Capacitor's reflective activity callback.
+            call.reject("Invalid result from the system network save dialog");
         }
     }
 
@@ -879,38 +903,26 @@ public class CapacitorWifiPlugin extends Plugin {
             return;
         }
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // ACTION_WIFI_ADD_NETWORKS saves user-owned configurations, not
+            // app suggestions. Android 10+ does not expose their saved status
+            // to ordinary apps. Neither a suggestion lookup nor a local cache
+            // can tell whether the user has since forgotten a saved network.
+            call.unavailable(
+                "Android 10 and later do not expose user-saved Wi-Fi networks to ordinary apps. " +
+                    "Use connect() directly; do not interpret an unavailable saved-network check as an unsaved network."
+            );
+            return;
+        }
+
         try {
-            boolean isSaved;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                isSaved = isNetworkSavedModern(ssid);
-            } else {
-                // API 29 (Q): getNetworkSuggestions() isn't available yet, fall back to the
-                // legacy WifiConfiguration-based lookup which works on API 28 and API 29.
-                isSaved = isNetworkSavedLegacy(ssid);
-            }
+            boolean isSaved = isNetworkSavedLegacy(ssid);
             JSObject ret = new JSObject();
             ret.put("isSaved", isSaved);
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("Failed to check network saved status: " + e.getMessage(), e);
         }
-    }
-
-    @RequiresApi(api = Build.VERSION_CODES.R)
-    private boolean isNetworkSavedModern(String ssid) {
-        List<WifiNetworkSuggestion> suggestions = wifiManager.getNetworkSuggestions();
-        for (WifiNetworkSuggestion suggestion : suggestions) {
-            // getSsid() returns the raw (unquoted) SSID; strip quotes defensively in case the
-            // platform ever returns a quoted value.
-            String suggestionSsid = suggestion.getSsid();
-            if (suggestionSsid != null) {
-                suggestionSsid = suggestionSsid.replace("\"", "");
-            }
-            if (ssid.equals(suggestionSsid)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     @SuppressWarnings("deprecation")
